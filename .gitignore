@@ -1,12 +1,8 @@
-/.idea
-/target
-/slide/target
-/tlg-wic-codec
-/.claude
-
-
-# Added by cargo
-#
-# already existing elements were commented out
-
-#/target
+/build/
+/out/
+/target/
+/.vs/
+/.idea/
+/.claude/
+CMakeUserPresets.json
+*.user

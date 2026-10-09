@@ -1,0 +1,35 @@
+name: C++
+on: [push, pull_request]
+
+jobs:
+  msvc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure latest MSVC
+        run: cmake --preset msvc
+      - name: Build
+        run: cmake --build --preset release --parallel
+      - name: Test
+        run: ctest --preset release
+      - name: Configure address sanitizer
+        run: cmake --preset msvc-asan
+      - name: Build address sanitizer
+        run: cmake --build --preset asan --parallel
+      - name: Test address sanitizer
+        shell: pwsh
+        run: |
+          $vsRoot = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $tools = Get-ChildItem "$vsRoot\VC\Tools\MSVC" | Sort-Object Name -Descending | Select-Object -First 1
+          $env:PATH = "$($tools.FullName)\bin\Hostx64\x64;$env:PATH"
+          ctest --preset asan
+  gcc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure with GCC and sanitizers
+        run: cmake -S . -B build/gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug -DTLG_ENABLE_SANITIZERS=ON
+      - name: Build
+        run: cmake --build build/gcc --parallel
+      - name: Test
+        run: ctest --test-dir build/gcc --output-on-failure

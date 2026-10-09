@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.raw binary
+*.tlg5 binary
+*.tlg6 binary
+*.sds5 binary
+*.sds6 binary
+*.bin binary
