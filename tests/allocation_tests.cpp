@@ -47,7 +47,7 @@ void put32(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t v
     for (unsigned i = 0; i < 4; ++i) bytes[offset + i] = static_cast<std::uint8_t>(value >> (i * 8));
 }
 std::uint32_t get32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
-    tlg::detail::ByteReader reader(std::span(bytes).subspan(offset, 4));
+    tlg::detail::ByteReader reader{std::span{bytes}.subspan(offset, 4)};
     return reader.u32();
 }
 }

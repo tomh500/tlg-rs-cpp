@@ -46,7 +46,7 @@ CTest 还覆盖命令行帮助与原始像素文件往返。`msvc-asan` configur
 ASan Debug 及 `TLG_ENABLE_SIMD=OFF` 的 Release 构建均通过全部五项 CTest。
 库测试包含 22,358 次检查，Slide 参考测试包含 26,336 次检查，另外验证了
 中文文件路径及命令行元数据、CMake 安装后通过 `find_package(tlg)` 链接的独立应用。
-这里记录本机结果；GitHub 的 GCC/UBSan 工作流需在推送后由 CI 实际执行。
+这里记录本机结果；远端 MSVC 与 GCC/UBSan 的执行记录见 [GitHub Actions](https://github.com/tomh500/tlg-rs-cpp/actions/workflows/cpp.yml)。
 
 ## 与保留的 Rust 分支双向验证
 

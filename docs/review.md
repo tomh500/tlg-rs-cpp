@@ -25,4 +25,7 @@
 常规验证可通过 [测试说明](../tests/README.md) 的 CMake/CTest 与互操作脚本重跑。
 大规模突变及强制重定位是本机审查实验，临时源程序保留在
 `build/review/root/{fuzz.cpp,rebase.cpp}`，不加入正常构建。它们不构成对任意输入的证明。
-GCC/UBSan 与其他平台的 CI 尚未执行，真实图片语料的全面性能比较也尚未完成。
+首次远端 CI 的 Windows MSVC Release 与 ASan 检查通过；GCC 13.3 构建发现分配测试
+中 `std::span` 的括号初始化解析问题，已改为明确的大括号初始化。
+GCC/UBSan 的后续验证状态见 [GitHub Actions](https://github.com/tomh500/tlg-rs-cpp/actions/workflows/cpp.yml)。
+真实图片语料的全面性能比较尚未完成。
