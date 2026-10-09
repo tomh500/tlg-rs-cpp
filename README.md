@@ -1,50 +1,49 @@
+这么做的意义是什么就连我也不知道？
+
 # tlg-cpp
 
-为了伟大的轩酱。
+一个使用现代 C++ 实现的 TLG 格式编解码库，支持 TLG5、TLG6 和 SDS 元信息。
 
-从 OIER 和计算机科学学生的视角，用现代 C++ 重写的 Kirikiri TLG5/TLG6 无损图像编解码库。MSVC 使用 **`/std:c++latest`**，公开 API 使用 `std::span`、`std::expected` 和 RAII；库本身只依赖标准库。
+## 什么是 TLG
 
-原 Rust `master` 已保存在 **`xuanrikka`** 分支，新 **`main`** 保存 C++ 实现。原始提交为 `1f0d294e95b184bb9480d41e44d602d0e6a3dd7f`，历史与 MIT 许可证保留。
+TLG 是视觉小说引擎 Kirikiri2（krkr2）内置的一种无损图片格式，常见版本为 TLG5 和 TLG6。官方实现可参考 [tlg-wic-codec](https://github.com/krkrz/tlg-wic-codec)。
 
-## 构建与测试
+## 这个项目做了什么
 
-本机 Windows + Visual Studio 2022/MSVC，CMake 3.24 或更新版本：
+- 基于原 Rust 实现重写 TLG5、TLG6 和 Slide 编解码器；
+- 使用 `std::span`、`std::expected` 和标准库容器提供 C++ 接口；
+- 支持 Gray、RGB、RGBA 像素与 SDS 元信息；
+- 提供 CMake 构建、命令行工具和兼容性测试。
 
-本次验证使用 MSVC 19.44.35228 与 CMake 4.3.2。其他工具链也必须提供 `std::expected`。
+库本身只依赖 C++ 标准库。MSVC 使用 `/std:c++latest`，其他编译器需要支持 C++23 及 `std::expected`。原 Rust 实现保留在 `xuanrikka` 分支。
 
-```powershell
-cmake --preset msvc
-cmake --build --preset release --parallel
-ctest --preset release
-```
+## 快速开始
 
-调试构建用 `debug` preset。AddressSanitizer 用 `msvc-asan` configure preset 和 `asan` build/test preset：
+### 添加依赖
 
-```powershell
-cmake --preset msvc-asan
-cmake --build --preset asan --parallel
-# 如 ASan DLL 不在 PATH，在 x64 Native Tools Command Prompt 中运行：
-ctest --preset asan
-```
-
-其他编译器需要支持 C++23 的标准库（包括 `std::expected`）：
-
-```sh
-cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Release
-cmake --build build/native --parallel
-ctest --test-dir build/native --output-on-failure
-```
-
-## 在 C++ 中使用
-
-作为子目录加入，链接 `tlg::tlg`：
+通过 CMake 子目录加入项目：
 
 ```cmake
 add_subdirectory(tlg-cpp)
 target_link_libraries(my_app PRIVATE tlg::tlg)
 ```
 
-也可 `cmake --install build/msvc --config Release --prefix <目录>`，然后通过 `find_package(tlg CONFIG REQUIRED)` 使用导出的同名 target。
+也可以安装后使用 `find_package`：
+
+```powershell
+cmake --preset msvc
+cmake --build --preset release --parallel
+cmake --install build/msvc --config Release --prefix C:/libraries/tlg
+```
+
+```cmake
+find_package(tlg CONFIG REQUIRED)
+target_link_libraries(my_app PRIVATE tlg::tlg)
+```
+
+配置应用时，将安装目录加入 `CMAKE_PREFIX_PATH`。
+
+### 示例：读取和写入 TLG 文件
 
 ```cpp
 #include <tlg/tlg.hpp>
@@ -56,43 +55,87 @@ int main() {
         std::cerr << document.error().message << '\n';
         return 1;
     }
-    auto saved = tlg::write_file("output.tlg", document->image.view(),
-                                {.format = tlg::Format::tlg6}, document->tags);
-    if (!saved) {
-        std::cerr << saved.error().message << '\n';
+
+    auto result = tlg::write_file(
+        "output.tlg", document->image.view(),
+        {.format = tlg::Format::tlg6}, document->tags);
+    if (!result) {
+        std::cerr << result.error().message << '\n';
         return 1;
     }
 }
 ```
 
-内存接口为 `encode(ImageView, EncodeOptions, Tags)` 和 `decode(span, DecodeOptions)`。编码借用像素，不复制输入、不消费图像。像素紧密排列，通道顺序为 Gray/RGB/RGBA，不要求对齐，也没有行填充。TLG5、TLG6 与 SDS 容器自动识别；包含中文、逗号、冒号、等号乃至 NUL 的元信息按字节长度正确处理。`Tags` 使用有序 map，输出确定且可复现。
+`read_file` 自动识别 TLG5、TLG6 和 SDS 容器，`tags` 保存文件中的元信息。编码接口借用输入像素，不修改或转移其所有权。
 
-错误携带 `ErrorCode`、字节位置和说明；内部解析错误与内存分配失败转换成 `std::unexpected`。默认解码限制为 268,435,456 像素、1 GiB 图像字节、1 GiB 输入、16 MiB SDS 扩展块，调用者可以通过 `DecodeOptions` 调整。默认编码也限制为相同像素数量和 1 GiB 输入像素，可通过 `EncodeOptions` 调整。解码默认拒绝裸图像尾随数据。
+### 示例：直接使用内存接口
 
-接口返回 `expected`，并不意味着应用无需 C++ 异常支持；内部使用异常展开解析路径，MSVC 库构建启用 `/EHsc`。
+```cpp
+#include <tlg/tlg.hpp>
+#include <array>
 
-## 命令行
+int main() {
+    const std::array<std::uint8_t, 6> pixels{255, 0, 0, 0, 255, 0};
+    const tlg::ImageView image{2, 1, tlg::PixelLayout::rgb, pixels};
 
-无需其他图像库即可处理原始像素文件：
+    auto encoded = tlg::encode(image, {.format = tlg::Format::tlg5});
+    if (!encoded) return 1;
+    auto decoded = tlg::decode(*encoded);
+    if (!decoded) return 1;
+}
+```
+
+像素按从上到下的顺序紧密排列，通道顺序为 Gray、RGB 或 RGBA，不包含行填充。`encode` 的第三个参数可以传入元信息；非空元信息会写入 SDS 容器。长度按字节计算，内容可以包含逗号、冒号、等号和 NUL。
+
+### 命令行
 
 ```powershell
-build/msvc/Release/tlg_tool.exe encode --format 6 --width 1920 --height 1080 --layout rgba --tag "作者=轩酱" input.raw output.tlg
+build/msvc/Release/tlg_tool.exe encode --format 6 --width 1920 --height 1080 --layout rgba --tag "author=example" input.raw output.tlg
 build/msvc/Release/tlg_tool.exe info output.tlg
 build/msvc/Release/tlg_tool.exe decode output.tlg restored.raw
 ```
 
-工具支持 Unicode 路径，拒绝输入输出指向同一文件，`--help` 显示完整用法。`info` 会验证并解码文件；`decode` 输出原始像素，元信息可通过 `info` 或库接口读取。这里没有隐含 PNG/JPEG 转换依赖。
+命令行工具处理紧密排列的原始像素，不包含 PNG/JPEG 转换。`info` 验证并解码文件，显示尺寸、通道数和元信息；`--help` 显示用法。
 
-## 为什么值得重写
+## 构建与测试
 
-- 修复原 Reader 的签名消费、SDS 签名比较、Gray 图像构造和含标点元信息解析问题。
-- 将尺寸乘法、块边界、位长度、游程、Slide 输出和分配上限纳入格式解析；不依赖补零掩盖截断。
-- Slide 支持重叠匹配与完整尾部匹配；TLG5 原始平面使用零拷贝视图，解码接受任意正块高。
-- TLG6 直接输出所需像素布局；候选缓冲放在栈上，计分考虑 alpha 和 Gray 的两种预测，用双遍编码控制额外驻留内存。
-- 提供模块化算法、中文推导、不可变 Rust 样本、双向互操作、畸形输入测试、复现基准和可安装的 CMake target。
+Windows 预设使用 Visual Studio 2022、MSVC x64 和 CMake 3.24 或更新版本：
 
-实测速度和压缩率取决于数据，比较结果与适用范围见 [基准说明](docs/benchmark.md)。测试与互操作方法见 [测试说明](tests/README.md)，算法、复杂度和不变量见 [算法说明](docs/algorithms.md)。
+```powershell
+cmake --preset msvc
+cmake --build --preset release --parallel
+ctest --preset release
+```
 
-## 来源与许可证
+本机已验证 MSVC 19.44.35228 和 CMake 4.3.2。调试构建使用 `debug` build/test preset；AddressSanitizer 使用 `msvc-asan` configure preset 和 `asan` build/test preset：
 
-保留 XuanRikka 的原 Rust 工作与 MIT 许可证。格式核对参考 [Kirikiri 官方实现](https://github.com/krkrz/krkrz/blob/master/visual/LoadTLG.cpp)。`xuanrikka` 分支保留 Rust 生态的原 API；C++ 主线使用独立的标准库接口。
+```powershell
+cmake --preset msvc-asan
+cmake --build --preset asan --parallel
+ctest --preset asan
+```
+
+若 ASan 运行时不在 `PATH`，请在 x64 Native Tools Command Prompt 中运行测试。其他支持 C++23 的工具链可直接使用 CMake：
+
+```sh
+cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Release
+cmake --build build/native --parallel
+ctest --test-dir build/native --output-on-failure
+```
+
+## 接口说明
+
+操作结果通过 `std::expected` 返回，错误包含类别、输入字节位置和说明。内部使用异常展开解析路径，构建需要启用 C++ 异常支持。
+
+`DecodeOptions` 默认限制为 268,435,456 像素、1 GiB 图像字节、1 GiB 输入和 16 MiB SDS 扩展块，并拒绝裸图像尾随数据。`EncodeOptions` 默认使用 TLG6，限制相同的像素数量和 1 GiB 输入像素。调用者可以调整这些选项。
+
+测试和 Rust 互操作方法见 [测试说明](tests/README.md)，算法见 [算法说明](docs/algorithms.md)，测量方法和结果见 [基准说明](docs/benchmark.md)，本次审查的复现与修复见 [审查记录](docs/review.md)。
+
+## 鸣谢
+
+- Kirikiri 引擎开发者；
+- XuanRikka 的原 Rust 实现。
+
+## 许可证
+
+本项目使用 [MIT 许可证](LICENSE)。

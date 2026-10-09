@@ -23,6 +23,15 @@ for ($sample = 1; $sample -le $Samples; ++$sample) {
         else { $rows = & $rustPath benchmark $Width $Height $Rounds }
         if ($LASTEXITCODE -ne 0) { throw "$implementation benchmark failed" }
         $data = $rows | ConvertFrom-Csv
+        foreach ($row in $data) {
+            foreach ($field in @('encode_ms', 'decode_ms')) {
+                $duration = [double]::Parse($row.$field, [Globalization.CultureInfo]::InvariantCulture)
+                if ($duration -le 0 -or [double]::IsNaN($duration) -or [double]::IsInfinity($duration)) {
+                    throw "$implementation $field must be finite and positive; rebuild the benchmark with full timing precision or increase rounds"
+                }
+                $row.$field = $duration
+            }
+        }
         $data | Add-Member -NotePropertyName sample -NotePropertyValue $sample
         if ($implementation -eq 'cpp') { $cppData += $data }
         else { $rustData += $data }

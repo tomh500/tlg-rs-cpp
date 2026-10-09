@@ -126,7 +126,8 @@ fn main() {
                 for _ in 0..rounds { std::hint::black_box(decode(&encoded, format)); }
                 let decode_s = start.elapsed().as_secs_f64() / rounds as f64;
                 let mib = raw.len() as f64 / 1048576.0;
-                println!("rust,{format},{pattern},{w},{h},4,{rounds},{},{:.3},{:.3},{:.3},{:.3}",
+                assert!(encode_s > 0.0 && decode_s > 0.0, "timer resolution exceeded; increase rounds");
+                println!("rust,{format},{pattern},{w},{h},4,{rounds},{},{},{},{},{}",
                     encoded.len(), encode_s * 1000.0, decode_s * 1000.0, mib / encode_s, mib / decode_s);
             }}
         }

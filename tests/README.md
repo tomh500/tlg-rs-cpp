@@ -33,12 +33,17 @@ TLG5 另有手写的未压缩灰度流，固定跨行/跨列预测结果，覆�
 丢弃压缩结果后的 store/restore 和截断/输出溢出拒绝行为。正常 MSVC Release
 运行只需很短时间；不依赖 encoder/decoder 恰好产生同一种错误的往返结果。
 
+`allocation_tests.cpp` 在独立测试进程中拦截普通分配，设每次 64 KiB 的上限。
+它构造声明大图像的短小无效 TLG5/TLG6 流、缺失熵块的 TLG6、超过元数据限额
+或扩展块截断的 SDS，要求这些输入在申请图像或大解压缓冲前返回对应解析错误。
+接口还通过编译期检查禁止从临时 `Image` 调用 `view()`。
+
 CTest 还覆盖命令行帮助与原始像素文件往返。`msvc-asan` configure preset、
 `asan` build/test preset 为上述测试启用 AddressSanitizer；非 MSVC 的
 `TLG_ENABLE_SANITIZERS=ON` 同时启用 address/undefined sanitizers。
 
 2026-10-10 在本机 MSVC 19.44.35228 上，Release、Debug、ASan RelWithDebInfo、
-ASan Debug 及 `TLG_ENABLE_SIMD=OFF` 的 Release 构建均通过全部四项 CTest。
+ASan Debug 及 `TLG_ENABLE_SIMD=OFF` 的 Release 构建均通过全部五项 CTest。
 库测试包含 22,358 次检查，Slide 参考测试包含 26,336 次检查，另外验证了
 中文文件路径及命令行元数据、CMake 安装后通过 `find_package(tlg)` 链接的独立应用。
 这里记录本机结果；GitHub 的 GCC/UBSan 工作流需在推送后由 CI 实际执行。

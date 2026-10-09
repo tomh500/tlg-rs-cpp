@@ -656,6 +656,20 @@ Image decode6(std::span<const std::uint8_t> bytes, const DecodeOptions& options)
     const auto filter_size = reader.u32();
     const auto filter_offset = reader.position();
     const auto compressed_filters = reader.take(filter_size);
+    // Verify all entropy frame lengths before allocating filters and pixels.
+    auto framing = reader;
+    for (std::size_t row = 0; row < blocks_y; ++row) {
+        for (unsigned c = 0; c < colors; ++c) {
+            const auto length_field = framing.u32();
+            require((length_field >> 30) == 0, ErrorCode::unsupported_format,
+                    "Unsupported TLG6 entropy coding method", framing.position() - 4);
+            require(length_field > 0 && length_field <= maximum_bits, ErrorCode::corrupt_data,
+                    "TLG6 channel length exceeds its header maximum", framing.position() - 4);
+            framing.take((std::size_t{length_field} + 7) / 8);
+        }
+    }
+    require(!options.reject_trailing_data || framing.empty(), ErrorCode::corrupt_data,
+            "Unexpected bytes after the TLG6 image", framing.position());
     SlideDecoder slide(filter_dictionary);
     const auto filters = [&] {
         try { return slide.decode(compressed_filters, blocks_x * blocks_y); }

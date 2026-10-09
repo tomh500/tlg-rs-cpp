@@ -29,9 +29,10 @@ struct Image {
     PixelLayout layout{PixelLayout::rgba};
     std::vector<std::uint8_t> pixels;
 
-    [[nodiscard]] ImageView view() const noexcept {
+    [[nodiscard]] ImageView view() const & noexcept {
         return {width, height, layout, pixels};
     }
+    ImageView view() const && = delete; // A temporary cannot own a borrowed view.
 };
 
 // Sorted keys make SDS output reproducible. Lengths count bytes, not characters.

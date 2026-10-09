@@ -15,6 +15,12 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
+
+template<class T>
+concept CanBorrowImage = requires(T&& image) { std::forward<T>(image).view(); };
+static_assert(CanBorrowImage<tlg::Image&> && CanBorrowImage<const tlg::Image&>);
+static_assert(!CanBorrowImage<tlg::Image> && !CanBorrowImage<const tlg::Image>);
 
 namespace {
 std::size_t checks{};

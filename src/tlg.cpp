@@ -152,16 +152,6 @@ Result<Document> decode(std::span<const std::uint8_t> data, const DecodeOptions&
         const auto raw_size = reader.u32();
         const auto raw = reader.take(raw_size);
         Document document;
-        try {
-            document.format = detect_format(raw);
-            // The SDS raw_size is a hard boundary, regardless of outer trailing-data policy.
-            auto raw_options = options;
-            raw_options.reject_trailing_data = true;
-            document.image = decode_raw(raw, document.format, raw_options);
-        } catch (detail::Failure& failure) {
-            failure.error.offset += 15;
-            throw;
-        }
         const auto metadata_start = reader.position();
         detail::require(reader.remaining() <= options.max_metadata_bytes, ErrorCode::resource_limit,
                         "SDS chunks exceed metadata byte limit", metadata_start);
@@ -173,6 +163,16 @@ Result<Document> decode(std::span<const std::uint8_t> data, const DecodeOptions&
             constexpr std::array<std::uint8_t, 4> tags_name{'t','a','g','s'};
             if (std::ranges::equal(name, tags_name)) read_tags(payload, document.tags, base);
             // The SDS container permits extension chunks; their size still bounds every read.
+        }
+        try {
+            document.format = detect_format(raw);
+            // The SDS raw_size is a hard boundary, regardless of outer trailing-data policy.
+            auto raw_options = options;
+            raw_options.reject_trailing_data = true;
+            document.image = decode_raw(raw, document.format, raw_options);
+        } catch (detail::Failure& failure) {
+            failure.error.offset += 15;
+            throw;
         }
         return document;
     });

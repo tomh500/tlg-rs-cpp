@@ -9,6 +9,9 @@
 
 namespace tlg::detail {
 
+// Check token lengths and framing before allocating decompressed storage.
+void validate_slide(std::span<const std::uint8_t> input, std::size_t exact_output);
+
 // TLG's LZSS uses a 12-bit ring position and lengths in [3, 273]. Each
 // encode/decode call begins a fresh flag group; the dictionary persists.
 class SlideEncoder {

@@ -162,6 +162,43 @@ Image decode5(std::span<const std::uint8_t> data, const DecodeOptions& options) 
     const auto table_offset = reader.position();
     ByteReader sizes(reader.take(block_count * 4), table_offset);
 
+    // Validate every block and compressed token stream before trusting the
+    // dimensions enough to allocate the full image or its channel buffers.
+    auto framing = reader;
+    auto framing_sizes = sizes;
+    for (std::size_t block = 0, first_row = 0; block < block_count; ++block) {
+        const auto rows = std::min(block_height, height - first_row);
+        const auto plane_length = width * rows;
+        const auto block_size = std::size_t(framing_sizes.u32());
+        const auto block_offset = framing.position();
+        ByteReader block_reader(framing.take(block_size), block_offset);
+        for (std::size_t c = 0; c < colors; ++c) {
+            const auto flag_offset = block_reader.position();
+            const auto flag = block_reader.u8();
+            require(flag <= 1, ErrorCode::corrupt_data,
+                    "TLG5 compression flag must be 0 or 1", flag_offset);
+            const auto size = std::size_t(block_reader.u32());
+            if (flag == 1) {
+                require(size == plane_length, ErrorCode::corrupt_data,
+                        "TLG5 raw plane has an incorrect length", flag_offset + 1);
+                block_reader.take(size);
+            } else {
+                const auto compressed_offset = block_reader.position();
+                const auto compressed = block_reader.take(size);
+                try { validate_slide(compressed, plane_length); }
+                catch (Failure& failure) {
+                    failure.error.offset += compressed_offset;
+                    throw;
+                }
+            }
+        }
+        require(block_reader.empty(), ErrorCode::corrupt_data,
+                "TLG5 block size does not match its channel payloads", block_reader.position());
+        first_row += rows;
+    }
+    require(!options.reject_trailing_data || framing.empty(), ErrorCode::corrupt_data,
+            "TLG5 file has trailing bytes", framing.position());
+
     Image image{width_field, height_field, layout, std::vector<std::uint8_t>(output_size)};
     SlideDecoder slide;
     std::array<std::vector<std::uint8_t>, 4> storage;

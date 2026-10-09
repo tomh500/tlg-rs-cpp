@@ -47,7 +47,7 @@ int main(int argc, char** argv) try {
     if (static_cast<std::uint64_t>(width) * height > 268435456ULL)
         throw std::runtime_error("benchmark dimensions exceed 268435456 pixels");
     std::cout << "implementation,format,pattern,width,height,channels,rounds,encoded_bytes,encode_ms,decode_ms,encode_mib_s,decode_mib_s\n";
-    std::cout << std::fixed << std::setprecision(3);
+    std::cout << std::setprecision(std::numeric_limits<double>::max_digits10);
     std::size_t checksum{};
     for (const std::string_view pattern : {"flat", "gradient", "random"}) {
         const auto raw = pixels(width, height, pattern);
@@ -73,6 +73,8 @@ int main(int argc, char** argv) try {
                 checksum += output->image.pixels.front();
             }
             const auto decode_seconds = std::chrono::duration<double>(Clock::now() - decode_start).count() / rounds;
+            if (!(encode_seconds > 0 && decode_seconds > 0))
+                throw std::runtime_error("timer resolution exceeded; increase rounds");
             const auto mib = static_cast<double>(raw.size()) / 1048576.0;
             std::cout << "cpp," << (format == tlg::Format::tlg5 ? 5 : 6) << ',' << pattern << ','
                       << width << ',' << height << ",4," << rounds << ',' << encoded->size() << ','

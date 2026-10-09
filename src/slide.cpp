@@ -228,8 +228,33 @@ SlideDecoder::SlideDecoder(std::span<const std::uint8_t> dictionary) {
     std::copy(dictionary.begin(), dictionary.end(), text_.begin());
 }
 
+void validate_slide(std::span<const std::uint8_t> input, std::size_t exact_output) {
+    ByteReader reader(input);
+    std::size_t written = 0;
+    while (written < exact_output) {
+        const auto flags = reader.u8();
+        for (unsigned bit = 0; bit < 8 && written < exact_output; ++bit) {
+            std::size_t length = 1;
+            if ((flags & (1u << bit)) != 0) {
+                reader.u8();
+                const auto high = reader.u8();
+                length = std::size_t(high >> 4) + 3;
+                if ((high >> 4) == 15) length = 18 + reader.u8();
+                require(length <= exact_output - written, ErrorCode::corrupt_data,
+                        "Slide match exceeds the expected output size", reader.position());
+            } else {
+                reader.u8();
+            }
+            written += length;
+        }
+    }
+    require(reader.empty(), ErrorCode::corrupt_data,
+            "Slide stream has bytes beyond its expected output", reader.position());
+}
+
 std::vector<std::uint8_t> SlideDecoder::decode(std::span<const std::uint8_t> input,
                                              std::size_t exact_output) {
+    validate_slide(input, exact_output);
     ByteReader reader(input);
     std::vector<std::uint8_t> output;
     require(exact_output <= output.max_size(), ErrorCode::resource_limit, "Slide output is too large");
