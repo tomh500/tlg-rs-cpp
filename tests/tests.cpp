@@ -86,6 +86,8 @@ void round_trip(std::uint32_t width, std::uint32_t height, tlg::PixelLayout layo
     REQUIRE(decoded->image.pixels == raw);
     REQUIRE(decoded->tags.empty());
     REQUIRE(decoded->format == format);
+    REQUIRE(tlg::detect_format(*encoded) == format);
+    REQUIRE(tlg::detect_format(std::span(*encoded).first(11)) == format);
     REQUIRE(decoded->image.view().pixels.size() == raw.size());
     const auto reencoded = tlg::encode(decoded->image.view(), tlg::EncodeOptions{format});
     REQUIRE(reencoded);
@@ -106,6 +108,71 @@ void round_trips() {
         }
     }
 }
+void algorithm_choices() {
+    // Comparing two implementations catches mistakes that a round trip can
+    // happily hide. Both sides agreeing on the same bug would be awkward.
+    constexpr std::array dimensions{1U, 3U, 7U, 8U, 9U, 17U, 33U};
+    for (const auto layout : {tlg::PixelLayout::gray, tlg::PixelLayout::rgb, tlg::PixelLayout::rgba}) {
+        for (const auto width : dimensions) {
+            for (const auto height : dimensions) {
+                for (unsigned pattern = 0; pattern < 5; ++pattern) {
+                    const auto raw = pixels(width, height, layout, pattern);
+                    const tlg::ImageView image{width, height, layout, raw};
+                    tlg::EncodeOptions factored{tlg::Format::tlg6};
+                    auto reference = factored;
+                    reference.tlg6_filter_search = tlg::Tlg6FilterSearch::reference;
+                    const auto a = tlg::encode(image, factored);
+                    const auto b = tlg::encode(image, reference);
+                    REQUIRE(a && b);
+                    REQUIRE(*a == *b);
+                    for (const auto format : {tlg::Format::tlg5, tlg::Format::tlg6}) {
+                        factored.format = format;
+                        const auto greedy = tlg::encode(image, factored);
+                        auto options = factored;
+                        options.slide_parse = tlg::SlideParse::optimal;
+                        const auto optimal = tlg::encode(image, options);
+                        REQUIRE(greedy && optimal);
+                        if (format == tlg::Format::tlg6) REQUIRE(optimal->size() <= greedy->size());
+                        // TLG5 store/restore decisions can change later dictionaries;
+                        // the per-chunk optimum is not a whole-file size theorem.
+                        for (const auto mode : {tlg::SlideDecode::bulk, tlg::SlideDecode::scalar}) {
+                            tlg::DecodeOptions decode_options;
+                            decode_options.slide_decode = mode;
+                            const auto decoded = tlg::decode(*optimal, decode_options);
+                            REQUIRE(decoded);
+                            REQUIRE(decoded->image.pixels == raw);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const auto raw = pixels(33, 33, tlg::PixelLayout::rgba, 3);
+    const tlg::ImageView image{33, 33, tlg::PixelLayout::rgba, raw};
+    tlg::EncodeOptions options;
+    options.slide_parse = static_cast<tlg::SlideParse>(99);
+    auto invalid = tlg::encode(image, options);
+    REQUIRE(!invalid && invalid.error().code == tlg::ErrorCode::invalid_argument);
+    options = {};
+    options.tlg6_filter_search = static_cast<tlg::Tlg6FilterSearch>(99);
+    invalid = tlg::encode(image, options);
+    REQUIRE(!invalid && invalid.error().code == tlg::ErrorCode::invalid_argument);
+    options = {};
+    options.slide_match = static_cast<tlg::SlideMatch>(99);
+    invalid = tlg::encode(image, options);
+    REQUIRE(!invalid && invalid.error().code == tlg::ErrorCode::invalid_argument);
+    options = {};
+    options.slide_parse = tlg::SlideParse::optimal;
+    options.max_slide_working_bytes = 1;
+    invalid = tlg::encode(image, options);
+    REQUIRE(!invalid && invalid.error().code == tlg::ErrorCode::resource_limit);
+    const auto encoded = tlg::encode(image);
+    REQUIRE(encoded);
+    tlg::DecodeOptions decode_options;
+    decode_options.slide_decode = static_cast<tlg::SlideDecode>(99);
+    const auto bad_decode = tlg::decode(*encoded, decode_options);
+    REQUIRE(!bad_decode && bad_decode.error().code == tlg::ErrorCode::invalid_argument);
+}
 void metadata() {
     const tlg::Tags tags{{"author", "\xe8\xbd\xa9\xe9\x85\xb1"},
         {"a:=,\xe6\x96\x87", "value,:=\n\xe4\xb8\xad\xe6\x96\x87\xf0\x9f\x99\x82"},
@@ -120,6 +187,14 @@ void metadata() {
         REQUIRE(decoded->image.pixels == raw);
         REQUIRE(decoded->tags == tags);
         REQUIRE(decoded->format == format);
+        REQUIRE(tlg::detect_format(*encoded) == format);
+        REQUIRE(tlg::detect_format(std::span(*encoded).first(26)) == format);
+        for (std::size_t n = 0; n < 26; ++n)
+            REQUIRE(!tlg::detect_format(std::span(*encoded).first(n)));
+        auto invalid_probe = *encoded;
+        put32(invalid_probe, 11, 10);
+        const auto bad_probe = tlg::detect_format(invalid_probe);
+        REQUIRE(!bad_probe && bad_probe.error().code == tlg::ErrorCode::corrupt_data);
         const auto repeated = tlg::encode(image, tlg::EncodeOptions{format}, tags);
         REQUIRE(repeated);
         REQUIRE(*repeated == *encoded);
@@ -443,8 +518,9 @@ void file_io() {
 }
 
 int main() {
-    const std::array<std::pair<std::string_view, void(*)()>, 8> tests{{
+    const std::array<std::pair<std::string_view, void(*)()>, 9> tests{{
         {"round trips across block boundaries", round_trips}, {"length-prefixed deterministic metadata", metadata},
+        {"exact filter factoring and selectable Slide algorithms", algorithm_choices},
         {"invalid encoder arguments", invalid_arguments}, {"malformed streams, truncation, and resource limits", malformed_and_limits},
         {"handwritten TLG5 variable block heights", tlg5_wire_examples}, {"bounded deterministic mutation sweep", mutation_sweep},
         {"immutable Rust interoperability fixtures", rust_fixtures}, {"file I/O", file_io}}};

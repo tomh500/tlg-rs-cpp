@@ -151,32 +151,34 @@ struct BitCounter {
 struct BitWriter {
     std::size_t position = 0;
     std::vector<std::uint8_t> data;
+    std::uint64_t pool = 0;
+    unsigned pooled_bits = 0;
 
     void put(std::uint32_t value, unsigned count) {
         if (count == 0) return;
         require(position <= bit_length_mask && count <= bit_length_mask - position,
                 ErrorCode::resource_limit, "TLG6 channel exceeds its 30-bit length field");
-        const auto end = position + count;
-        data.resize((end + 7) / 8, 0);
-        if (value == 0) { position = end; return; }
-        if (count <= 8) {
-            const auto byte = position / 8;
-            const unsigned shift = static_cast<unsigned>(position & 7);
-            value &= (std::uint32_t{1} << count) - 1;
-            data[byte] |= static_cast<std::uint8_t>(value << shift);
-            if (shift + count > 8) data[byte + 1] |= static_cast<std::uint8_t>(value >> (8 - shift));
-            position = end;
-            return;
+        // Each code fragment is at most 32 bits; the pool holds the fragment
+        // plus at most 31 pending bits. Let the buffer breathe between words.
+        pool |= (std::uint64_t{value} & ((std::uint64_t{1} << count) - 1)) << pooled_bits;
+        pooled_bits += count;
+        position += count;
+        if (pooled_bits >= 32) {
+            auto word = static_cast<std::uint32_t>(pool);
+            if constexpr (std::endian::native == std::endian::big) word = std::byteswap(word);
+            const auto start = data.size();
+            data.resize(start + 4);
+            std::memcpy(data.data() + start, &word, 4);
+            pool >>= 32;
+            pooled_bits -= 32;
         }
-        while (count != 0) {
-            const unsigned offset = static_cast<unsigned>(position & 7);
-            const unsigned take = std::min(count, 8 - offset);
-            const auto mask = (std::uint32_t{1} << take) - 1;
-            data[position / 8] |= static_cast<std::uint8_t>((value & mask) << offset);
-            value >>= take;
-            position += take;
-            count -= take;
-        }
+    }
+
+    void finish() {
+        for (unsigned i = 0; i < (pooled_bits + 7) / 8; ++i)
+            data.push_back(static_cast<std::uint8_t>(pool >> (8 * i)));
+        pool = 0;
+        pooled_bits = 0;
     }
 };
 
@@ -410,8 +412,9 @@ std::size_t block_index(std::size_t bx, std::size_t row, std::size_t col,
     return stored_row * width + stored_col;
 }
 
-std::array<Block, 2> predict_block(ImageView image, std::size_t x, std::size_t y) {
-    std::array<Block, 2> result{};
+template<unsigned Predictor = 2>
+auto predict_block(ImageView image, std::size_t x, std::size_t y) {
+    std::array<Block, Predictor == 2 ? 2 : 1> result{};
     const unsigned colors = static_cast<unsigned>(image.layout);
     const auto bw = std::min<std::size_t>(8, image.width - x);
     const auto bh = std::min<std::size_t>(8, image.height - y);
@@ -426,8 +429,11 @@ std::array<Block, 2> predict_block(ImageView image, std::size_t x, std::size_t y
                 const auto above = y + row != 0 ? image.pixels[p - stride] : std::uint8_t{0};
                 const auto diagonal = x + col != 0 && y + row != 0
                                     ? image.pixels[p - stride - colors] : std::uint8_t{0};
-                result[0][c][index] = static_cast<std::uint8_t>(image.pixels[p] - med(left, above, diagonal));
-                result[1][c][index] = static_cast<std::uint8_t>(image.pixels[p] - avg(left, above));
+                if constexpr (Predictor != 1)
+                    result[0][c][index] = static_cast<std::uint8_t>(image.pixels[p] - med(left, above, diagonal));
+                if constexpr (Predictor != 0)
+                    result[Predictor == 2 ? 1 : 0][c][index] =
+                        static_cast<std::uint8_t>(image.pixels[p] - avg(left, above));
             }
         }
     }
@@ -490,25 +496,68 @@ void inverse_block(std::uint8_t* b, std::uint8_t* g, std::uint8_t* r,
     }
 }
 
-std::size_t channel_cost(std::span<const std::uint8_t> values) {
+std::size_t reference_channel_cost(std::span<const std::uint8_t> values) {
     BitCounter counter;
     encode_channel(counter, values);
     return counter.position;
 }
 
-std::uint8_t choose_filter(const std::array<Block, 2>& candidates,
-                           std::size_t count, unsigned colors) {
+std::size_t channel_cost(std::span<const std::uint8_t> values) {
+    std::size_t position = 1;
+    unsigned a = 0;
+    unsigned n = 3;
+    std::size_t i = 0;
+    while (i < values.size()) {
+        const bool nonzero = values[i] != 0;
+        auto end = i + 1;
+        if (nonzero) {
+            end = static_cast<std::size_t>(std::find(values.data() + end,
+                                                     values.data() + values.size(), std::uint8_t{0})
+                                           - values.data());
+        } else while (end < values.size() && values[end] == 0) ++end;
+        position += 2 * std::bit_width(static_cast<std::uint32_t>(end - i)) - 1;
+        if (nonzero) {
+            const auto measure = [&](unsigned phase) {
+                const unsigned byte = values[i++];
+                const unsigned m = ((byte << 1) ^ (0x1ffu & (0u - (byte >> 7)))) - 1;
+                const unsigned k = golomb_table[a][phase];
+                const unsigned quotient = m >> k;
+                const unsigned cap = 32 - static_cast<unsigned>(position & 7);
+                position += k + (quotient < cap ? quotient + 1 : cap + 8);
+                a += m >> 1;
+            };
+            while (n != 3 && i < end) {
+                measure(n);
+                if (n == 0) { a >>= 1; n = 3; } else --n;
+            }
+            // The Rice state repeats every four nonzero bytes. Unrolling that
+            // period is exact, including a zero run between two partial periods.
+            while (end - i >= 4) {
+                measure(3); measure(2); measure(1); measure(0);
+                a >>= 1;
+            }
+            while (i < end) {
+                measure(n);
+                if (n == 0) { a >>= 1; n = 3; } else --n;
+            }
+        } else i = end;
+    }
+    return position;
+}
+
+std::uint8_t choose_filter_reference(const std::array<Block, 2>& candidates,
+                                     std::size_t count, unsigned colors) {
     std::size_t best_cost = std::numeric_limits<std::size_t>::max();
     std::uint8_t best = 0;
     for (unsigned predictor = 0; predictor < 2; ++predictor) {
         const auto alpha_cost = colors == 4
-            ? channel_cost(std::span{candidates[predictor][3]}.first(count)) : 0;
+            ? reference_channel_cost(std::span{candidates[predictor][3]}.first(count)) : 0;
         for (unsigned code = 0; code < (colors >= 3 ? 16u : 1u); ++code) {
             auto trial = candidates[predictor]; // stack storage, no allocation per trial
             filter_block(trial, count, code);
             auto cost = alpha_cost;
             for (unsigned c = 0; c < std::min(colors, 3u); ++c) {
-                cost += channel_cost(std::span{trial[c]}.first(count));
+                cost += reference_channel_cost(std::span{trial[c]}.first(count));
                 if (cost >= best_cost) break;
             }
             if (cost < best_cost) {
@@ -517,6 +566,104 @@ std::uint8_t choose_filter(const std::array<Block, 2>& candidates,
             }
         }
     }
+    return best;
+}
+
+enum ChannelExpression : unsigned {
+    blue, green, red, blue_green, red_green, green_blue, green_red,
+    blue_red, red_blue, blue_green_red, red_green_blue, blue_red_green,
+    red_twice_blue, green_twice_blue, expression_count
+};
+
+// All arithmetic is modulo 256. These are the *ordered* transforms expanded
+// into linear expressions; swapping two operations changes several filters.
+constexpr std::array<std::array<unsigned, 3>, 16> filter_expressions{{
+    {blue, green, red},
+    {blue_green, green, red_green},
+    {blue, green_blue, red_green},
+    {blue_green, green_red, red},
+    {blue_green_red, green_blue, red_green},
+    {blue_red, green_blue, red},
+    {blue_green, green, red},
+    {blue, green_blue, red},
+    {blue, green, red_green},
+    {blue_green, green_red, red_green_blue},
+    {blue_red, green_red, red},
+    {blue, green_blue, red_blue},
+    {blue, green_red, red_blue},
+    {blue_red_green, green_red, red_blue},
+    {blue_green, blue_green_red, red_blue},
+    {blue, green_twice_blue, red_twice_blue}
+}};
+
+template<unsigned Expression>
+void make_expression(std::array<std::uint8_t, 64>& output, const Block& block,
+                     std::size_t count) noexcept {
+    for (std::size_t i = 0; i < count; ++i) {
+        const int b = block[0][i], g = block[1][i], r = block[2][i];
+        int value = 0;
+        if constexpr (Expression == blue_green) value = b - g;
+        if constexpr (Expression == red_green) value = r - g;
+        if constexpr (Expression == green_blue) value = g - b;
+        if constexpr (Expression == green_red) value = g - r;
+        if constexpr (Expression == blue_red) value = b - r;
+        if constexpr (Expression == red_blue) value = r - b;
+        if constexpr (Expression == blue_green_red) value = b + g - r;
+        if constexpr (Expression == red_green_blue) value = r + g - b;
+        if constexpr (Expression == blue_red_green) value = b + r - g;
+        if constexpr (Expression == red_twice_blue) value = r - 2 * b;
+        if constexpr (Expression == green_twice_blue) value = g - 2 * b;
+        output[i] = static_cast<std::uint8_t>(value);
+    }
+}
+
+std::size_t expression_cost(const Block& block, std::size_t count, unsigned expression) {
+    if (expression < 3) return channel_cost(std::span{block[expression]}.first(count));
+    // One scratch channel, independent of image dimensions; no candidate owns
+    // an allocation, and each requested expression is generated only once.
+    std::array<std::uint8_t, 64> values;
+    switch (expression) {
+    case blue_green: make_expression<blue_green>(values, block, count); break;
+    case red_green: make_expression<red_green>(values, block, count); break;
+    case green_blue: make_expression<green_blue>(values, block, count); break;
+    case green_red: make_expression<green_red>(values, block, count); break;
+    case blue_red: make_expression<blue_red>(values, block, count); break;
+    case red_blue: make_expression<red_blue>(values, block, count); break;
+    case blue_green_red: make_expression<blue_green_red>(values, block, count); break;
+    case red_green_blue: make_expression<red_green_blue>(values, block, count); break;
+    case blue_red_green: make_expression<blue_red_green>(values, block, count); break;
+    case red_twice_blue: make_expression<red_twice_blue>(values, block, count); break;
+    case green_twice_blue: make_expression<green_twice_blue>(values, block, count); break;
+    }
+    return channel_cost(std::span{values}.first(count));
+}
+
+std::uint8_t choose_filter_factored(const std::array<Block, 2>& candidates,
+                                    std::size_t count, unsigned colors) {
+    std::size_t best_cost = std::numeric_limits<std::size_t>::max();
+    std::uint8_t best = 0;
+    for (unsigned predictor = 0; predictor < 2; ++predictor) {
+        std::array<std::size_t, expression_count> costs;
+        costs.fill(std::numeric_limits<std::size_t>::max());
+        const auto alpha_cost = colors == 4
+            ? channel_cost(std::span{candidates[predictor][3]}.first(count)) : 0;
+        for (unsigned code = 0; code < (colors >= 3 ? 16u : 1u); ++code) {
+            auto cost = alpha_cost;
+            for (unsigned c = 0; c < std::min(colors, 3u); ++c) {
+                auto& cached = costs[filter_expressions[code][c]];
+                if (cached == std::numeric_limits<std::size_t>::max())
+                    cached = expression_cost(candidates[predictor], count, filter_expressions[code][c]);
+                cost += cached;
+                if (cost >= best_cost) break;
+            }
+            if (cost < best_cost) {
+                best_cost = cost;
+                best = static_cast<std::uint8_t>(2 * code + predictor);
+            }
+        }
+    }
+    // Sixteen filters, fourteen distinct channels. Making Rice redo the same
+    // homework forty-eight times was enthusiastic, but hardly necessary.
     return best;
 }
 
@@ -569,7 +716,7 @@ void reconstruct_stripe(Image& image, const std::array<std::vector<std::uint8_t>
 
 } // namespace
 
-std::vector<std::uint8_t> encode6(ImageView image) {
+std::vector<std::uint8_t> encode6(ImageView image, const EncodeOptions& options) {
     const unsigned colors = static_cast<unsigned>(image.layout);
     require(std::size_t{image.width} * std::min<std::size_t>(8, image.height)
                 <= std::numeric_limits<std::uint32_t>::max(),
@@ -585,10 +732,13 @@ std::vector<std::uint8_t> encode6(ImageView image) {
         const auto bh = std::min<std::size_t>(8, image.height - y);
         for (std::size_t x = 0; x < image.width; x += 8) {
             const auto bw = std::min<std::size_t>(8, image.width - x);
-            filters.push_back(choose_filter(predict_block(image, x, y), bw * bh, colors));
+            const auto candidates = predict_block(image, x, y);
+            filters.push_back(options.tlg6_filter_search == Tlg6FilterSearch::reference
+                ? choose_filter_reference(candidates, bw * bh, colors)
+                : choose_filter_factored(candidates, bw * bh, colors));
         }
     }
-    SlideEncoder slide(filter_dictionary);
+    SlideEncoder slide(filter_dictionary, options.slide_parse, options.max_slide_working_bytes, options.slide_match);
     const auto compressed_filters = slide.encode(filters);
     require(compressed_filters.size() <= std::numeric_limits<std::uint32_t>::max(),
             ErrorCode::resource_limit, "TLG6 filter table is too large");
@@ -611,7 +761,10 @@ std::vector<std::uint8_t> encode6(ImageView image) {
         for (std::size_t x = 0; x < image.width; x += 8) {
             const auto bw = std::min<std::size_t>(8, image.width - x);
             const auto type = filters[(y / 8) * blocks_x + x / 8];
-            auto block = predict_block(image, x, y)[type & 1];
+            // The decision is already made. No need to calculate the losing
+            // predictor again in the output pass.
+            auto block = (type & 1) != 0 ? predict_block<1>(image, x, y)[0]
+                                        : predict_block<0>(image, x, y)[0];
             filter_block(block, bw * bh, type >> 1);
             for (unsigned c = 0; c < colors; ++c)
                 std::copy_n(block[c].begin(), bw * bh, stripe[c].begin() + x * bh);
@@ -620,6 +773,7 @@ std::vector<std::uint8_t> encode6(ImageView image) {
             BitWriter bits;
             bits.data.reserve(std::size_t{image.width} * bh + 16);
             encode_channel(bits, std::span{stripe[c]}.first(std::size_t{image.width} * bh));
+            bits.finish();
             const auto length = static_cast<std::uint32_t>(bits.position);
             max_length = std::max(max_length, length);
             writer.u32(length);
@@ -670,7 +824,7 @@ Image decode6(std::span<const std::uint8_t> bytes, const DecodeOptions& options)
     }
     require(!options.reject_trailing_data || framing.empty(), ErrorCode::corrupt_data,
             "Unexpected bytes after the TLG6 image", framing.position());
-    SlideDecoder slide(filter_dictionary);
+    SlideDecoder slide(filter_dictionary, options.slide_decode);
     const auto filters = [&] {
         try { return slide.decode(compressed_filters, blocks_x * blocks_y); }
         catch (Failure& failure) {

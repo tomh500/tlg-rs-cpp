@@ -1,0 +1,3 @@
+"Format","Pattern","Samples","Rounds","SlideParse","FilterSearch","SlideDecode","SlideMatch","RustMeasurement","CppBytes","RustBytes","CppEncodeMs","RustEncodeMs","EncodeSpeedup","CppDecodeMs","RustDecodeMs","DecodeSpeedup"
+"TLG5","file","3","3","optimal","factored","bulk","adaptive","clone excluded","335922","347223","811.3927","38.5192333333333","0.05","2.08986666666667","2.2597","1.08"
+"TLG6","file","3","3","optimal","factored","bulk","adaptive","clone excluded","224274","224373","39.3919666666667","65.1100666666667","1.65","5.81463333333333","4.61696666666667","0.79"

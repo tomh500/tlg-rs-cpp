@@ -17,6 +17,10 @@ TLG 是视觉小说引擎 Kirikiri2（krkr2）内置的一种无损图片格式�
 
 库本身只依赖 C++ 标准库。MSVC 使用 `/std:c++latest`，其他编译器需要支持 C++23 及 `std::expected`。原 Rust 实现保留在 `xuanrikka` 分支。
 
+当前 C++ 版本为 1.1.0，已同步上游 Rust v1.0.0 的提交
+[`10373b8`](https://github.com/XuanRikka/tlg-rs/commit/10373b87fd0d24fa38311b1b59758c7727624194)。
+同步范围、算法选择与可复现的验证见 [本次更新](docs/upstream-v1.md)。
+
 ## 快速开始
 
 ### 添加依赖
@@ -24,7 +28,7 @@ TLG 是视觉小说引擎 Kirikiri2（krkr2）内置的一种无损图片格式�
 通过 CMake 子目录加入项目：
 
 ```cmake
-add_subdirectory(tlg-cpp)
+add_subdirectory(tlg-rs-cpp)
 target_link_libraries(my_app PRIVATE tlg::tlg)
 ```
 
@@ -95,7 +99,17 @@ build/msvc/Release/tlg_tool.exe info output.tlg
 build/msvc/Release/tlg_tool.exe decode output.tlg restored.raw
 ```
 
-命令行工具处理紧密排列的原始像素，不包含 PNG/JPEG 转换。`info` 验证并解码文件，显示尺寸、通道数和元信息；`--help` 显示用法。
+命令行工具也可以自动读取图片并转换为 TLG，或把 TLG 输出为图片；TLG 间转码保留 SDS 元信息。
+便携格式不需要第三方库，Windows 默认通过系统 WIC 支持 PNG/JPEG/BMP/TIFF。
+AVIF 可通过 `TLG_TOOL_AVIF=ON` 和包含 AV1 编码器、解码器的 libavif 1.3+ 启用。JPEG 输出仅接受 Gray/RGB，且须显式指定 `--allow-lossy`；需要降低输入精度时也须指定此参数。
+
+```powershell
+build/msvc/Release/tlg_tool.exe encode -v 6 input.png output.tlg
+build/msvc/Release/tlg_tool.exe decode output.tlg restored.png
+build/msvc/Release/tlg_tool.exe transcode --format 5 --slide-parse optimal input.tlg output.tlg
+```
+
+`detect` 只检查文件头中的 TLG 类型，`info` 验证并解码完整文件；`--help` 显示全部选项。
 
 ## 构建与测试
 
@@ -128,6 +142,12 @@ ctest --test-dir build/native --output-on-failure
 操作结果通过 `std::expected` 返回，错误包含类别、输入字节位置和说明。内部使用异常展开解析路径，构建需要启用 C++ 异常支持。
 
 `DecodeOptions` 默认限制为 268,435,456 像素、1 GiB 图像字节、1 GiB 输入和 16 MiB SDS 扩展块，并拒绝裸图像尾随数据。`EncodeOptions` 默认使用 TLG6，限制相同的像素数量和 1 GiB 输入像素。调用者可以调整这些选项。
+
+默认采用 `SlideParse::greedy`、`Tlg6FilterSearch::factored` 和 `SlideDecode::bulk`。
+匹配搜索默认 `SlideMatch::adaptive`；`primary` 保留三字节索引，两版编码字节一致。
+`optimal` 以更多计算和内存换取单个 Slide 块的最短编码，默认解析临时状态预算为 256 MiB，不含匹配索引和输出；
+`reference` 和 `scalar` 保留完整枚举、逐字节实现，方便开发者对照实验。
+`detect_format` 可在不分配图像的情况下识别裸 TLG5/TLG6 或 SDS 内嵌图像。
 
 测试和 Rust 互操作方法见 [测试说明](tests/README.md)，算法见 [算法说明](docs/algorithms.md)，测量方法和结果见 [基准说明](docs/benchmark.md)，本次审查的复现与修复见 [审查记录](docs/review.md)。
 

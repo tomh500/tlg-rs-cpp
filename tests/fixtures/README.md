@@ -23,7 +23,7 @@ inside keys and values.
 
 Regeneration is an intentional maintainer operation:
 
-1. `git archive xuanrikka --output=build/oracle/rust-source.tar`
+1. `git archive 1f0d294e95b184bb9480d41e44d602d0e6a3dd7f --output=build/oracle/rust-source.tar`
 2. Extract into a separate `build/oracle/rust-source` directory.
 3. Copy `tests/interop/rust_oracle.rs` to that tree's `examples/interop.rs`.
 4. `cargo run --manifest-path build/oracle/rust-source/Cargo.toml --release --no-default-features --example interop -- generate tests/fixtures`

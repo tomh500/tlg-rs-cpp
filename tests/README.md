@@ -1,5 +1,44 @@
 # 测试与互操作
 
+## 2026-10-13 的补充审查
+
+再次只读核对远端 HEAD，仍为下文固定的 `10373b8`；oracle 中 19 个 Rust 库源码文件
+逐个匹配该提交的 Git blob。两条算法路线另经独立代码审查，块级最优性和精确等价的说明保持成立。
+
+补齐 PNM 注释的 CR/LF/CRLF 边界、最大值及魔数后直接注释、P1 紧凑位串和以空白起始的合法尾部。
+规则依据 [Netpbm PBM 规范](https://netpbm.sourceforge.net/doc/pbm.html) 与
+[PGM 规范](https://netpbm.sourceforge.net/doc/pgm.html)；53 项新增语法回归同时检查二进制首像素
+为 LF、CR、TAB、空格或 `#` 时不被当作头部吞掉。另完成 12 项 P1/P5/P6 魔数后注释的
+完整 CLI 往返（TLG5/TLG6 × Release/ASan），像素逐字节相同。
+
+补充非法 `SlideMatch` 参数检查后，库测试为 33,887 项。
+最终 Release、Debug、ASan、关闭 SIMD/WIC 的便携 Release、AVIF Release 和 AVIF ASan
+均重新构建受影响目标，并通过 `tlg_tests`、`tlg_image_io_tests`、`tlg_tool_help` 和
+`tlg_tool_roundtrip` 四项回归。此前完整 CTest 与跨语言记录保留在下文；未重复宣称远端 CI 已执行。
+
+## 2026-10-12 的最新版验证
+
+C++ 1.1.0 与固定 Rust v1.0.0 提交 `10373b87fd0d24fa38311b1b59758c7727624194` 完成了本机验证。
+Release、Debug、ASan RelWithDebInfo、关闭 SIMD/WIC 的便携 Release 都通过全部 7 项 CTest；
+启用 libavif 1.3.0/AOM 3.13.1 的 Release 通过全部 8 项。新增 AVIF 路径与图片 CLI 在 ASan 配置也通过。
+远端 CI 已更新，尚未将本地改动推送执行；不能把本机结果称为远端结果。
+
+- 普通库测试 33,886 项检查，包括 735 组完整 TLG6 `factored/reference` 字节差分与全部解析/解码选项。
+- Slide 测试 445,596 项检查，包括全部 4096 距离、重叠/环绕/多次调用、字典和 store/restore、
+  简单参考解码器、暴力最短路径 oracle，以及 `adaptive/primary` 的长候选链与激活/恢复边界。
+  530,000 次空回滚实际跨越 31 位年龄重定位边界，之后编码与清表对照逐字节相同。
+- `tlg6_tests.cpp` 用独立逐位 writer、生产 reader 往返和线性颜色系数 oracle 检查 100,000 个随机残差块、
+  800,000 项 Rice/writer/reader、300,000 项滤镜选择、2,000 组完整颜色系数、10,000 个任意位流。
+- 图片测试以手写 wire bytes 验证 P1–P7、QOI opcode、TGA 调色板/RLE/方向/尾部、farbfeld BE16、
+  DDS BC1/2/3 透明度和截断，以及输出失败不覆盖已有文件。
+- AVIF 有 507 项检查，包含无损/布局、全部不透明和透明 alpha、裁剪/旋转/镜像、深度、动画、
+  预乘 alpha、过大 ispe 声明和截断；另经 FFmpeg 颜色平面和 Pillow 完整 RGBA 解码核验。
+- 792 项最新版 Rust 双向检查，加 21 个独立 image-rs 图片输出检查；测试中不改 Rust 库源码。
+
+完整命令与算法保证边界见 [本次更新](../docs/upstream-v1.md)。下文 2026-10-10 的记录与不可变旧样本保持原样。
+
+## 基础构建
+
 正常测试只需 C++ 工具链，无需 Rust、图像库或外部测试框架：
 
 ```powershell

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iomanip>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -40,23 +41,58 @@ std::vector<std::uint8_t> pixels(std::uint32_t width, std::uint32_t height, std:
 }
 
 int main(int argc, char** argv) try {
-    if (argc > 4) throw std::runtime_error("usage: tlg_bench [width height rounds]");
+    if (argc > 10) throw std::runtime_error("usage: tlg_bench [width height rounds [greedy|optimal [factored|reference [bulk|scalar [raw_file|- [channels [adaptive|primary]]]]]]]");
     const auto width = argc > 1 ? parse_positive(argv[1]) : 512U;
     const auto height = argc > 2 ? parse_positive(argv[2]) : 512U;
     const auto rounds = argc > 3 ? parse_positive(argv[3]) : 3U;
+    tlg::EncodeOptions options;
+    tlg::DecodeOptions decode_options;
+    if (argc > 4) {
+        const std::string_view choice = argv[4];
+        if (choice == "optimal") options.slide_parse = tlg::SlideParse::optimal;
+        else if (choice != "greedy") throw std::runtime_error("unknown Slide parser");
+    }
+    if (argc > 5) {
+        const std::string_view choice = argv[5];
+        if (choice == "reference") options.tlg6_filter_search = tlg::Tlg6FilterSearch::reference;
+        else if (choice != "factored") throw std::runtime_error("unknown filter search");
+    }
+    if (argc > 6) {
+        const std::string_view choice = argv[6];
+        if (choice == "scalar") decode_options.slide_decode = tlg::SlideDecode::scalar;
+        else if (choice != "bulk") throw std::runtime_error("unknown Slide decoder");
+    }
+    const auto channels = argc > 8 ? parse_positive(argv[8]) : 4U;
+    const bool from_file = argc > 7 && std::string_view(argv[7]) != "-";
+    if (argc > 9) {
+        const std::string_view choice = argv[9];
+        if (choice == "primary") options.slide_match = tlg::SlideMatch::primary;
+        else if (choice != "adaptive") throw std::runtime_error("unknown Slide match search");
+    }
+    if (channels != 1 && channels != 3 && channels != 4) throw std::runtime_error("channels must be 1, 3, or 4");
     if (static_cast<std::uint64_t>(width) * height > 268435456ULL)
         throw std::runtime_error("benchmark dimensions exceed 268435456 pixels");
     std::cout << "implementation,format,pattern,width,height,channels,rounds,encoded_bytes,encode_ms,decode_ms,encode_mib_s,decode_mib_s\n";
     std::cout << std::setprecision(std::numeric_limits<double>::max_digits10);
     std::size_t checksum{};
-    for (const std::string_view pattern : {"flat", "gradient", "random"}) {
-        const auto raw = pixels(width, height, pattern);
-        const tlg::ImageView image{width, height, tlg::PixelLayout::rgba, raw};
+    for (const std::string_view pattern : {"flat", "gradient", "random", "file"}) {
+        if (from_file != (pattern == "file")) continue;
+        auto raw = pattern == "file" ? std::vector<std::uint8_t>{} : pixels(width, height, pattern);
+        if (pattern == "file") {
+            std::ifstream input(argv[7], std::ios::binary | std::ios::ate);
+            if (!input || input.tellg() != static_cast<std::streamoff>(std::uint64_t{width} * height * channels))
+                throw std::runtime_error("raw input size does not match dimensions and channels");
+            raw.resize(static_cast<std::size_t>(input.tellg()));
+            input.seekg(0);
+            input.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
+            if (!input) throw std::runtime_error("cannot read raw benchmark input");
+        }
+        const tlg::ImageView image{width, height, static_cast<tlg::PixelLayout>(pattern == "file" ? channels : 4), raw};
         for (const auto format : {tlg::Format::tlg5, tlg::Format::tlg6}) {
-            const tlg::EncodeOptions options{format};
+            options.format = format;
             auto encoded = tlg::encode(image, options);
             if (!encoded) throw std::runtime_error(encoded.error().message);
-            auto decoded = tlg::decode(*encoded);
+            auto decoded = tlg::decode(*encoded, decode_options);
             if (!decoded) throw std::runtime_error(decoded.error().message);
             if (decoded->image.pixels != raw) throw std::runtime_error("benchmark round trip failed");
             const auto encode_start = Clock::now();
@@ -68,7 +104,7 @@ int main(int argc, char** argv) try {
             const auto encode_seconds = std::chrono::duration<double>(Clock::now() - encode_start).count() / rounds;
             const auto decode_start = Clock::now();
             for (std::uint32_t i = 0; i < rounds; ++i) {
-                auto output = tlg::decode(*encoded);
+                auto output = tlg::decode(*encoded, decode_options);
                 if (!output) throw std::runtime_error(output.error().message);
                 checksum += output->image.pixels.front();
             }
@@ -77,7 +113,7 @@ int main(int argc, char** argv) try {
                 throw std::runtime_error("timer resolution exceeded; increase rounds");
             const auto mib = static_cast<double>(raw.size()) / 1048576.0;
             std::cout << "cpp," << (format == tlg::Format::tlg5 ? 5 : 6) << ',' << pattern << ','
-                      << width << ',' << height << ",4," << rounds << ',' << encoded->size() << ','
+                      << width << ',' << height << ',' << tlg::channels(image.layout) << ',' << rounds << ',' << encoded->size() << ','
                       << encode_seconds * 1000.0 << ',' << decode_seconds * 1000.0 << ','
                       << mib / encode_seconds << ',' << mib / decode_seconds << '\n';
         }

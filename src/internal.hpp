@@ -109,8 +109,8 @@ inline std::uint32_t checked_u32(std::size_t value) {
     return static_cast<std::uint32_t>(value);
 }
 
-std::vector<std::uint8_t> encode5(ImageView image);
-std::vector<std::uint8_t> encode6(ImageView image);
+std::vector<std::uint8_t> encode5(ImageView image, const EncodeOptions& options);
+std::vector<std::uint8_t> encode6(ImageView image, const EncodeOptions& options);
 Image decode5(std::span<const std::uint8_t> data, const DecodeOptions& options);
 Image decode6(std::span<const std::uint8_t> data, const DecodeOptions& options);
 

@@ -84,7 +84,7 @@ void reconstruct(Image& image, std::size_t first_row, std::size_t end_row,
 
 } // namespace
 
-std::vector<std::uint8_t> encode5(ImageView image) {
+std::vector<std::uint8_t> encode5(ImageView image, const EncodeOptions& options) {
     const auto colors = channels(image.layout);
     const auto width = std::size_t(image.width);
     const auto height = std::size_t(image.height);
@@ -102,7 +102,7 @@ std::vector<std::uint8_t> encode5(ImageView image) {
     std::array<std::vector<std::uint8_t>, 4> planes;
     const auto plane_capacity = width * std::min(height, encoded_block_height);
     for (std::size_t c = 0; c < colors; ++c) planes[c].resize(plane_capacity);
-    SlideEncoder slide;
+    SlideEncoder slide({}, options.slide_parse, options.max_slide_working_bytes, options.slide_match);
 
     for (std::size_t block = 0; block < block_count; ++block) {
         const auto first_row = block * encoded_block_height;
@@ -200,7 +200,7 @@ Image decode5(std::span<const std::uint8_t> data, const DecodeOptions& options) 
             "TLG5 file has trailing bytes", framing.position());
 
     Image image{width_field, height_field, layout, std::vector<std::uint8_t>(output_size)};
-    SlideDecoder slide;
+    SlideDecoder slide({}, options.slide_decode);
     std::array<std::vector<std::uint8_t>, 4> storage;
     std::array<std::span<const std::uint8_t>, 4> planes;
 
@@ -227,7 +227,9 @@ Image decode5(std::span<const std::uint8_t> data, const DecodeOptions& options) 
                 const auto compressed_offset = block_reader.position();
                 const auto compressed = block_reader.take(size);
                 try {
-                    storage[c] = slide.decode(compressed, plane_length);
+                    // The framing pass already checked these exact bytes and
+                    // output length. Don't make every token stand in line twice.
+                    storage[c] = slide.decode_prevalidated(compressed, plane_length);
                 } catch (Failure& failure) {
                     failure.error.offset += compressed_offset;
                     throw;

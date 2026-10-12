@@ -36,7 +36,11 @@ foreach ($case in $cases) {
         if ($LASTEXITCODE -ne 0) { throw "C++ encode failed for $name TLG$format" }
         & $oraclePath verify $format $width $height $channels $cppEncoded $rawPath
         if ($LASTEXITCODE -ne 0) { throw "Rust decoding C++ failed for $name TLG$format" }
-        $rustEncoded = Join-Path $fixtureRoot "$name.tlg$format"
+        # The checked-in fixtures are intentionally old. This direction must
+        # exercise the Rust tree being tested, not quietly replay those fixtures.
+        $rustEncoded = Join-Path $outputRoot "$name.rust.tlg$format"
+        & $oraclePath encode_raw $format $width $height $channels $rawPath $rustEncoded
+        if ($LASTEXITCODE -ne 0) { throw "Rust encode failed for $name TLG$format" }
         $cppDecoded = Join-Path $outputRoot "$name.cpp.decoded$format.raw"
         & $toolPath decode $rustEncoded $cppDecoded
         if ($LASTEXITCODE -ne 0) { throw "C++ decoding Rust failed for $name TLG$format" }

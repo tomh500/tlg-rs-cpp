@@ -5,7 +5,14 @@ param(
     [int]$Height = 512,
     [int]$Rounds = 30,
     [int]$Samples = 5,
-    [string]$OutputDirectory = "$PSScriptRoot/../build/benchmark"
+    [string]$OutputDirectory = "$PSScriptRoot/../build/benchmark",
+    [ValidateSet('greedy', 'optimal')][string]$SlideParse = 'greedy',
+    [ValidateSet('factored', 'reference')][string]$FilterSearch = 'factored',
+    [ValidateSet('bulk', 'scalar')][string]$SlideDecode = 'bulk',
+    [string]$RawFile = '',
+    [ValidateSet(1, 3, 4)][int]$Channels = 4,
+    [switch]$RustCodecOnly,
+    [ValidateSet('adaptive', 'primary')][string]$SlideMatch = 'adaptive'
 )
 $ErrorActionPreference = 'Stop'
 if ($Width -lt 1 -or $Height -lt 1 -or $Rounds -lt 1 -or $Samples -lt 1) { throw 'Width, height, rounds, and samples must be positive' }
@@ -19,10 +26,22 @@ $cppData = @()
 $rustData = @()
 for ($sample = 1; $sample -le $Samples; ++$sample) {
     foreach ($implementation in $(if ($sample % 2 -eq 1) { @('cpp', 'rust') } else { @('rust', 'cpp') })) {
-        if ($implementation -eq 'cpp') { $rows = & $cppPath $Width $Height $Rounds }
-        else { $rows = & $rustPath benchmark $Width $Height $Rounds }
+        if ($implementation -eq 'cpp') {
+            $arguments = @($Width, $Height, $Rounds, $SlideParse, $FilterSearch, $SlideDecode)
+            if ($RawFile) { $arguments += @((Resolve-Path -LiteralPath $RawFile).Path, $Channels, $SlideMatch) }
+            else { $arguments += @('-', 4, $SlideMatch) }
+            $rows = & $cppPath @arguments
+        } elseif ($RawFile) {
+            $command = if ($RustCodecOnly) { 'benchmark_raw_codec' } else { 'benchmark_raw' }
+            $rows = & $rustPath $command $Width $Height $Channels $Rounds (Resolve-Path -LiteralPath $RawFile).Path
+        } else {
+            $command = if ($RustCodecOnly) { 'benchmark_codec' } else { 'benchmark' }
+            $rows = & $rustPath $command $Width $Height $Rounds
+        }
         if ($LASTEXITCODE -ne 0) { throw "$implementation benchmark failed" }
         $data = $rows | ConvertFrom-Csv
+        $expectedRows = if ($RawFile) { 2 } else { 6 }
+        if (@($data).Count -ne $expectedRows) { throw "$implementation emitted an incomplete workload table" }
         foreach ($row in $data) {
             foreach ($field in @('encode_ms', 'decode_ms')) {
                 $duration = [double]::Parse($row.$field, [Globalization.CultureInfo]::InvariantCulture)
@@ -45,9 +64,12 @@ function Median($Values) {
     if ($sorted.Length % 2 -eq 1) { return $sorted[$middle] }
     return ($sorted[$middle - 1] + $sorted[$middle]) / 2
 }
-foreach ($key in $cppData | Select-Object format,pattern -Unique) {
+$summary = @(foreach ($key in $cppData | Select-Object format,pattern -Unique) {
     $cpp = @($cppData | Where-Object { $_.format -eq $key.format -and $_.pattern -eq $key.pattern })
     $rust = @($rustData | Where-Object { $_.format -eq $key.format -and $_.pattern -eq $key.pattern })
+    if ($cpp.Count -ne $Samples -or $rust.Count -ne $Samples) { throw 'C++ and Rust workload samples do not match' }
+    if (@($cpp.encoded_bytes | Select-Object -Unique).Count -ne 1 -or
+        @($rust.encoded_bytes | Select-Object -Unique).Count -ne 1) { throw 'Encoded byte counts changed between samples' }
     $cppEncode = Median $cpp.encode_ms
     $rustEncode = Median $rust.encode_ms
     $cppDecode = Median $cpp.decode_ms
@@ -57,6 +79,11 @@ foreach ($key in $cppData | Select-Object format,pattern -Unique) {
         Pattern = $key.pattern
         Samples = $Samples
         Rounds = $Rounds
+        SlideParse = $SlideParse
+        FilterSearch = $FilterSearch
+        SlideDecode = $SlideDecode
+        SlideMatch = $SlideMatch
+        RustMeasurement = $(if ($RustCodecOnly) { 'clone excluded' } else { 'public API' })
         CppBytes = [long]$cpp[0].encoded_bytes
         RustBytes = [long]$rust[0].encoded_bytes
         CppEncodeMs = $cppEncode
@@ -66,4 +93,6 @@ foreach ($key in $cppData | Select-Object format,pattern -Unique) {
         RustDecodeMs = $rustDecode
         DecodeSpeedup = [math]::Round($rustDecode / $cppDecode, 2)
     }
-}
+})
+$summary | Export-Csv -NoTypeInformation -Encoding utf8 -LiteralPath "$outputRoot/summary.csv"
+$summary

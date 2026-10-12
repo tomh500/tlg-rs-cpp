@@ -14,6 +14,13 @@ namespace tlg {
 enum class PixelLayout : std::uint8_t { gray = 1, rgb = 3, rgba = 4 };
 enum class Format { tlg5, tlg6 };
 
+// Same wire format, different algorithms. Keep the simple paths available for
+// experiments and for checking that a clever optimization really earns its keep.
+enum class SlideParse { greedy, optimal };
+enum class SlideMatch { adaptive, primary };
+enum class SlideDecode { bulk, scalar };
+enum class Tlg6FilterSearch { factored, reference };
+
 // Pixels are tightly packed, top to bottom, in Gray/RGB/RGBA order.
 // A view borrows its storage; encode never takes ownership or modifies it.
 struct ImageView {
@@ -69,18 +76,28 @@ struct DecodeOptions {
     std::size_t max_input_bytes = std::size_t{1} << 30;
     std::size_t max_metadata_bytes = std::size_t{16} << 20;
     bool reject_trailing_data = true;
+    SlideDecode slide_decode = SlideDecode::bulk;
 };
 
 struct EncodeOptions {
     Format format = Format::tlg6;
     std::size_t max_pixels = 268'435'456;
     std::size_t max_pixel_bytes = std::size_t{1} << 30;
+    SlideParse slide_parse = SlideParse::greedy;
+    Tlg6FilterSearch tlg6_filter_search = Tlg6FilterSearch::factored;
+    // Limits optimal parsing's temporary state; fixed match indices and encoded
+    // output are separate. The guarantee is the smallest individual Slide chunk.
+    std::size_t max_slide_working_bytes = std::size_t{256} << 20;
+    SlideMatch slide_match = SlideMatch::adaptive;
 };
 
 [[nodiscard]] Result<std::vector<std::uint8_t>> encode(
     ImageView image, const EncodeOptions& options = {}, const Tags& tags = {});
 [[nodiscard]] Result<Document> decode(
     std::span<const std::uint8_t> data, const DecodeOptions& options = {});
+// Signature-only inspection, including the raw image inside SDS. A successful
+// probe does not validate the rest of the file; use decode for that.
+[[nodiscard]] Result<Format> detect_format(std::span<const std::uint8_t> data);
 [[nodiscard]] Result<Document> read_file(
     const std::filesystem::path& path, const DecodeOptions& options = {});
 // Encoding completes before the destination is opened.

@@ -1,0 +1,7 @@
+"Format","Pattern","Samples","Rounds","SlideParse","FilterSearch","SlideDecode","SlideMatch","RustMeasurement","CppBytes","RustBytes","CppEncodeMs","RustEncodeMs","EncodeSpeedup","CppDecodeMs","RustDecodeMs","DecodeSpeedup"
+"TLG5","flat","5","30","greedy","factored","bulk","adaptive","clone excluded","15900","16922","1.74348666666667","11.7097033333333","6.72","0.477393333333333","1.07138333333333","2.24"
+"TLG6","flat","5","30","greedy","factored","bulk","adaptive","clone excluded","2132","2157","7.44483","27.4968366666667","3.69","0.585966666666667","1.17671333333333","2.01"
+"TLG5","gradient","5","30","greedy","factored","bulk","adaptive","clone excluded","16409","17196","2.94237333333333","12.4950533333333","4.25","0.478953333333333","1.04058333333333","2.17"
+"TLG6","gradient","5","30","greedy","factored","bulk","adaptive","clone excluded","68260","68286","12.12823","36.5754866666667","3.02","1.67548","1.8845","1.12"
+"TLG5","random","5","30","greedy","factored","bulk","adaptive","clone excluded","1051672","1051672","5.36681333333333","5.80738666666667","1.08","0.446936666666667","1.52870333333333","3.42"
+"TLG6","random","5","30","greedy","factored","bulk","adaptive","clone excluded","1116816","1117124","29.68086","79.9545233333333","2.69","3.83225","5.21473666666667","1.36"

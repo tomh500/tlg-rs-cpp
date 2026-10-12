@@ -12,6 +12,20 @@ jobs:
         run: cmake --build --preset release --parallel
       - name: Test
         run: ctest --preset release
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compare all algorithms against upstream v1.0.0
+        shell: pwsh
+        run: |
+          git fetch https://github.com/XuanRikka/tlg-rs.git 10373b87fd0d24fa38311b1b59758c7727624194
+          if ($LASTEXITCODE -ne 0) { throw 'upstream fetch failed' }
+          New-Item -ItemType Directory -Force build/oracle/latest | Out-Null
+          git archive 10373b87fd0d24fa38311b1b59758c7727624194 --output=build/oracle/latest.tar
+          if ($LASTEXITCODE -ne 0) { throw 'upstream archive failed' }
+          tar -xf build/oracle/latest.tar -C build/oracle/latest
+          if ($LASTEXITCODE -ne 0) { throw 'upstream extraction failed' }
+          ./tests/interop/run.ps1 -RustTree build/oracle/latest
+          ./tests/interop/algorithms.ps1 -RustOracle build/oracle/latest/target/release/examples/interop.exe
+          ./tests/interop/images.ps1 -RustTree build/oracle/latest
       - name: Configure address sanitizer
         run: cmake --preset msvc-asan
       - name: Build address sanitizer

@@ -29,7 +29,7 @@ Result<T> guarded(F&& operation) {
     }
 }
 
-Format detect_format(std::span<const std::uint8_t> bytes) {
+Format raw_format(std::span<const std::uint8_t> bytes) {
     detail::require(bytes.size() >= 11, ErrorCode::truncated_input, "missing TLG signature");
     const auto signature = bytes.first(11);
     if (std::ranges::equal(signature, detail::magic5)) return Format::tlg5;
@@ -99,6 +99,21 @@ void write_tag_string(detail::ByteWriter& writer, std::string_view value) {
 
 } // namespace
 
+Result<Format> detect_format(std::span<const std::uint8_t> data) {
+    return guarded<Format>([&] {
+        detail::require(data.size() >= 11, ErrorCode::truncated_input, "missing TLG signature");
+        if (!std::ranges::equal(data.first(11), detail::magic_sds)) return raw_format(data);
+        detail::ByteReader reader(data);
+        reader.take(11);
+        const auto raw_size = reader.u32();
+        detail::require(raw_size >= 11, ErrorCode::corrupt_data,
+                        "SDS image field cannot contain a complete TLG signature", 11);
+        const auto signature = reader.take(11);
+        try { return raw_format(signature); }
+        catch (detail::Failure& failure) { failure.error.offset += 15; throw; }
+    });
+}
+
 Result<std::vector<std::uint8_t>> encode(ImageView image, const EncodeOptions& options,
                                        const Tags& tags) {
     return guarded<std::vector<std::uint8_t>>([&] {
@@ -118,7 +133,14 @@ Result<std::vector<std::uint8_t>> encode(ImageView image, const EncodeOptions& o
         (void)detail::checked_image_size(image.width, image.height, image.layout, limits);
         detail::require(options.format == Format::tlg5 || options.format == Format::tlg6,
                         ErrorCode::invalid_argument, "unknown encoding format");
-        auto raw = options.format == Format::tlg5 ? detail::encode5(image) : detail::encode6(image);
+        detail::require(options.slide_parse == SlideParse::greedy || options.slide_parse == SlideParse::optimal,
+                        ErrorCode::invalid_argument, "unknown Slide parsing algorithm");
+        detail::require(options.slide_match == SlideMatch::adaptive || options.slide_match == SlideMatch::primary,
+                        ErrorCode::invalid_argument, "unknown Slide match search algorithm");
+        detail::require(options.tlg6_filter_search == Tlg6FilterSearch::factored ||
+                        options.tlg6_filter_search == Tlg6FilterSearch::reference,
+                        ErrorCode::invalid_argument, "unknown TLG6 filter search algorithm");
+        auto raw = options.format == Format::tlg5 ? detail::encode5(image, options) : detail::encode6(image, options);
         if (tags.empty()) return raw;
         detail::ByteWriter metadata;
         for (const auto& [key, value] : tags) {
@@ -140,11 +162,13 @@ Result<std::vector<std::uint8_t>> encode(ImageView image, const EncodeOptions& o
 
 Result<Document> decode(std::span<const std::uint8_t> data, const DecodeOptions& options) {
     return guarded<Document>([&] {
+        detail::require(options.slide_decode == SlideDecode::bulk || options.slide_decode == SlideDecode::scalar,
+                        ErrorCode::invalid_argument, "unknown Slide decoding algorithm");
         detail::require(data.size() <= options.max_input_bytes, ErrorCode::resource_limit,
                         "input exceeds encoded byte limit");
         detail::require(data.size() >= 11, ErrorCode::truncated_input, "missing TLG signature");
         if (!std::ranges::equal(data.first(11), detail::magic_sds)) {
-            const auto format = detect_format(data);
+            const auto format = raw_format(data);
             return Document{decode_raw(data, format, options), {}, format};
         }
         detail::ByteReader reader(data);
@@ -165,7 +189,7 @@ Result<Document> decode(std::span<const std::uint8_t> data, const DecodeOptions&
             // The SDS container permits extension chunks; their size still bounds every read.
         }
         try {
-            document.format = detect_format(raw);
+            document.format = raw_format(raw);
             // The SDS raw_size is a hard boundary, regardless of outer trailing-data policy.
             auto raw_options = options;
             raw_options.reject_trailing_data = true;
