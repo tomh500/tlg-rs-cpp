@@ -41,7 +41,7 @@ std::vector<std::uint8_t> pixels(std::uint32_t width, std::uint32_t height, std:
 }
 
 int main(int argc, char** argv) try {
-    if (argc > 10) throw std::runtime_error("usage: tlg_bench [width height rounds [greedy|optimal [factored|reference [bulk|scalar [raw_file|- [channels [adaptive|primary]]]]]]]");
+    if (argc > 10) throw std::runtime_error("usage: tlg_bench [width height rounds [greedy|optimal [factored|reference|refined|compact [bulk|scalar [raw_file|- [channels [adaptive|primary]]]]]]]");
     const auto width = argc > 1 ? parse_positive(argv[1]) : 512U;
     const auto height = argc > 2 ? parse_positive(argv[2]) : 512U;
     const auto rounds = argc > 3 ? parse_positive(argv[3]) : 3U;
@@ -55,6 +55,11 @@ int main(int argc, char** argv) try {
     if (argc > 5) {
         const std::string_view choice = argv[5];
         if (choice == "reference") options.tlg6_filter_search = tlg::Tlg6FilterSearch::reference;
+        else if (choice == "refined") options.tlg6_filter_search = tlg::Tlg6FilterSearch::refined;
+        else if (choice == "compact") {
+            options.tlg6_filter_search = tlg::Tlg6FilterSearch::refined;
+            options.compare_slide_parses = true;
+        }
         else if (choice != "factored") throw std::runtime_error("unknown filter search");
     }
     if (argc > 6) {

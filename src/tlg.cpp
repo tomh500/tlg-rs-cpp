@@ -138,9 +138,18 @@ Result<std::vector<std::uint8_t>> encode(ImageView image, const EncodeOptions& o
         detail::require(options.slide_match == SlideMatch::adaptive || options.slide_match == SlideMatch::primary,
                         ErrorCode::invalid_argument, "unknown Slide match search algorithm");
         detail::require(options.tlg6_filter_search == Tlg6FilterSearch::factored ||
-                        options.tlg6_filter_search == Tlg6FilterSearch::reference,
+                        options.tlg6_filter_search == Tlg6FilterSearch::reference ||
+                        options.tlg6_filter_search == Tlg6FilterSearch::refined,
                         ErrorCode::invalid_argument, "unknown TLG6 filter search algorithm");
         auto raw = options.format == Format::tlg5 ? detail::encode5(image, options) : detail::encode6(image, options);
+        if (options.compare_slide_parses) {
+            auto alternate = options;
+            alternate.slide_parse = options.slide_parse == SlideParse::greedy
+                ? SlideParse::optimal : SlideParse::greedy;
+            auto candidate = options.format == Format::tlg5
+                ? detail::encode5(image, alternate) : detail::encode6(image, alternate);
+            if (candidate.size() < raw.size()) raw = std::move(candidate);
+        }
         if (tags.empty()) return raw;
         detail::ByteWriter metadata;
         for (const auto& [key, value] : tags) {

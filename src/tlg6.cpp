@@ -503,7 +503,9 @@ std::size_t reference_channel_cost(std::span<const std::uint8_t> values) {
 }
 
 std::size_t channel_cost(std::span<const std::uint8_t> values) {
-    std::size_t position = 1;
+    // A losing stripe candidate may exceed the format's bit-length field.
+    // Count without address-size overflow, including on 32-bit targets.
+    std::uint64_t position = 1;
     unsigned a = 0;
     unsigned n = 3;
     std::size_t i = 0;
@@ -542,7 +544,8 @@ std::size_t channel_cost(std::span<const std::uint8_t> values) {
             }
         } else i = end;
     }
-    return position;
+    return static_cast<std::size_t>(std::min<std::uint64_t>(
+        position, std::numeric_limits<std::size_t>::max()));
 }
 
 std::uint8_t choose_filter_reference(const std::array<Block, 2>& candidates,
@@ -667,6 +670,152 @@ std::uint8_t choose_filter_factored(const std::array<Block, 2>& candidates,
     return best;
 }
 
+// Block-local estimates reset the Rice state and split zero/nonzero runs at
+// artificial boundaries. Score complete stripes instead. Uniform stripe
+// candidates also tend to simplify the Slide-compressed filter table, but only
+// the final full-file comparison is allowed to claim a size improvement.
+bool refine_uniform_filters(ImageView image, std::vector<std::uint8_t>& filters, std::size_t& work) {
+    const auto colors = static_cast<unsigned>(image.layout);
+    const auto blocks_x = (std::size_t{image.width} + 7) / 8;
+    const auto capacity = std::size_t{image.width} * std::min<std::size_t>(8, image.height);
+    if (work / colors / 2 < capacity) return false;
+    std::array<std::array<std::vector<std::uint8_t>, 4>, 2> predictions;
+    std::array<std::vector<std::uint8_t>, 4> trial;
+    for (unsigned c = 0; c < colors; ++c) {
+        for (auto& predictor : predictions) predictor[c].resize(capacity);
+        trial[c].resize(capacity);
+    }
+    bool changed = false;
+    for (std::size_t y = 0; y < image.height; y += 8) {
+        const auto bh = std::min<std::size_t>(8, image.height - y);
+        const auto count = std::size_t{image.width} * bh;
+        const auto scoring_work = count * colors;
+        // Reserve one baseline and at least one alternative before predicting.
+        if (work / 2 < scoring_work) break;
+        const auto row_offset = (y / 8) * blocks_x;
+        for (std::size_t x = 0; x < image.width; x += 8) {
+            const auto bw = std::min<std::size_t>(8, image.width - x);
+            auto blocks = predict_block(image, x, y);
+            for (unsigned p = 0; p < 2; ++p)
+                for (unsigned c = 0; c < colors; ++c)
+                    std::copy_n(blocks[p][c].begin(), bw * bh,
+                                predictions[p][c].begin() + x * bh);
+            const auto type = filters[row_offset + x / 8];
+            auto block = blocks[type & 1];
+            filter_block(block, bw * bh, type >> 1);
+            for (unsigned c = 0; c < colors; ++c)
+                std::copy_n(block[c].begin(), bw * bh, trial[c].begin() + x * bh);
+        }
+        const auto score = [&] {
+            std::pair<std::size_t, std::size_t> cost{}; // bytes, then bits
+            work -= scoring_work;
+            for (unsigned c = 0; c < colors; ++c) {
+                const auto bits = channel_cost(std::span{trial[c]}.first(count));
+                if (bits > bit_length_mask)
+                    return std::pair{std::numeric_limits<std::size_t>::max(),
+                                     std::numeric_limits<std::size_t>::max()};
+                cost.first += (bits + 7) / 8;
+                cost.second += bits;
+            }
+            return cost;
+        };
+        auto best = score();
+        unsigned selected = 32; // keep the original, nonuniform stripe
+        for (unsigned p = 0; p < 2; ++p) {
+            for (unsigned code = 0; code < (colors >= 3 ? 16u : 1u); ++code) {
+                if (work < scoring_work) break;
+                for (unsigned c = 0; c < colors; ++c)
+                    std::copy_n(predictions[p][c].begin(), count, trial[c].begin());
+                if (colors >= 3)
+                    for (std::size_t i = 0; i < count; ++i)
+                        color_filter(trial[0][i], trial[1][i], trial[2][i], code);
+                const auto cost = score();
+                if (cost < best || (cost == best && selected == 32)) {
+                    best = cost;
+                    selected = 2 * code + p;
+                }
+            }
+        }
+        if (selected != 32) {
+            for (std::size_t bx = 0; bx < blocks_x; ++bx) {
+                auto& type = filters[row_offset + bx];
+                changed |= type != selected;
+                type = static_cast<std::uint8_t>(selected);
+            }
+        }
+    }
+    return changed;
+}
+
+// Use any remaining budget for one coordinate-descent sweep. Changing one
+// block can change Rice adaptation and runs throughout the stripe suffix, so
+// every trial scores the complete stripe rather than summing block estimates.
+bool refine_local_filters(ImageView image, std::vector<std::uint8_t>& filters, std::size_t& work) {
+    const auto colors = static_cast<unsigned>(image.layout);
+    const auto blocks_x = (std::size_t{image.width} + 7) / 8;
+    const auto capacity = std::size_t{image.width} * std::min<std::size_t>(8, image.height);
+    if (work / colors / 2 < capacity) return false;
+    std::array<std::vector<std::uint8_t>, 4> stripe;
+    for (unsigned c = 0; c < colors; ++c) stripe[c].resize(capacity);
+    bool changed = false;
+    for (std::size_t y = 0; y < image.height; y += 8) {
+        const auto bh = std::min<std::size_t>(8, image.height - y);
+        const auto count = std::size_t{image.width} * bh;
+        const auto scoring_work = count * colors;
+        if (work / 2 < scoring_work) break;
+        const auto row_offset = (y / 8) * blocks_x;
+        const auto write_block = [&](const Block& block, std::size_t x, std::size_t length) {
+            for (unsigned c = 0; c < colors; ++c)
+                std::copy_n(block[c].begin(), length, stripe[c].begin() + x * bh);
+        };
+        for (std::size_t x = 0; x < image.width; x += 8) {
+            const auto length = std::min<std::size_t>(8, image.width - x) * bh;
+            const auto type = filters[row_offset + x / 8];
+            auto block = predict_block(image, x, y)[type & 1];
+            filter_block(block, length, type >> 1);
+            write_block(block, x, length);
+        }
+        const auto score = [&] {
+            std::pair<std::size_t, std::size_t> cost{};
+            work -= scoring_work;
+            for (unsigned c = 0; c < colors; ++c) {
+                const auto bits = channel_cost(std::span{stripe[c]}.first(count));
+                if (bits > bit_length_mask)
+                    return std::pair{std::numeric_limits<std::size_t>::max(),
+                                     std::numeric_limits<std::size_t>::max()};
+                cost.first += (bits + 7) / 8;
+                cost.second += bits;
+            }
+            return cost;
+        };
+        auto best = score();
+        for (std::size_t x = 0; x < image.width && work >= scoring_work; x += 8) {
+            const auto length = std::min<std::size_t>(8, image.width - x) * bh;
+            auto& selected = filters[row_offset + x / 8];
+            const auto original_type = selected;
+            const auto candidates = predict_block(image, x, y);
+            auto best_block = candidates[selected & 1];
+            filter_block(best_block, length, selected >> 1);
+            for (unsigned type = 0; type < (colors >= 3 ? 32u : 2u); ++type) {
+                if (type == original_type) continue;
+                if (work < scoring_work) break;
+                auto block = candidates[type & 1];
+                filter_block(block, length, type >> 1);
+                write_block(block, x, length);
+                const auto cost = score();
+                if (cost < best) {
+                    best = cost;
+                    selected = static_cast<std::uint8_t>(type);
+                    best_block = block;
+                }
+            }
+            write_block(best_block, x, length);
+            changed |= selected != original_type;
+        }
+    }
+    return changed;
+}
+
 template<unsigned Colors>
 void reconstruct_stripe(Image& image, const std::array<std::vector<std::uint8_t>, 4>& stripe,
                         std::span<const std::uint8_t> filters, std::size_t y, std::size_t bh) {
@@ -716,28 +865,10 @@ void reconstruct_stripe(Image& image, const std::array<std::vector<std::uint8_t>
 
 } // namespace
 
-std::vector<std::uint8_t> encode6(ImageView image, const EncodeOptions& options) {
+static std::vector<std::uint8_t> encode6_with_filters(ImageView image, const EncodeOptions& options,
+                                                     std::span<const std::uint8_t> filters) {
     const unsigned colors = static_cast<unsigned>(image.layout);
-    require(std::size_t{image.width} * std::min<std::size_t>(8, image.height)
-                <= std::numeric_limits<std::uint32_t>::max(),
-            ErrorCode::resource_limit, "TLG6 block row exceeds the 32-bit run-length range");
     const auto blocks_x = (std::size_t{image.width} + 7) / 8;
-    const auto blocks_y = (std::size_t{image.height} + 7) / 8;
-    std::vector<std::uint8_t> filters;
-    filters.reserve(blocks_x * blocks_y);
-
-    // Two passes avoid buffering a second complete compressed image before its
-    // filter table is known. Only a stripe of eight rows is retained in pass 2.
-    for (std::size_t y = 0; y < image.height; y += 8) {
-        const auto bh = std::min<std::size_t>(8, image.height - y);
-        for (std::size_t x = 0; x < image.width; x += 8) {
-            const auto bw = std::min<std::size_t>(8, image.width - x);
-            const auto candidates = predict_block(image, x, y);
-            filters.push_back(options.tlg6_filter_search == Tlg6FilterSearch::reference
-                ? choose_filter_reference(candidates, bw * bh, colors)
-                : choose_filter_factored(candidates, bw * bh, colors));
-        }
-    }
     SlideEncoder slide(filter_dictionary, options.slide_parse, options.max_slide_working_bytes, options.slide_match);
     const auto compressed_filters = slide.encode(filters);
     require(compressed_filters.size() <= std::numeric_limits<std::uint32_t>::max(),
@@ -782,6 +913,41 @@ std::vector<std::uint8_t> encode6(ImageView image, const EncodeOptions& options)
     }
     writer.patch_u32(max_length_offset, max_length);
     return std::move(writer.data);
+}
+
+std::vector<std::uint8_t> encode6(ImageView image, const EncodeOptions& options) {
+    const auto colors = static_cast<unsigned>(image.layout);
+    require(std::size_t{image.width} * std::min<std::size_t>(8, image.height)
+                <= std::numeric_limits<std::uint32_t>::max(),
+            ErrorCode::resource_limit, "TLG6 block row exceeds the 32-bit run-length range");
+    const auto blocks_x = (std::size_t{image.width} + 7) / 8;
+    const auto blocks_y = (std::size_t{image.height} + 7) / 8;
+    std::vector<std::uint8_t> filters;
+    filters.reserve(blocks_x * blocks_y);
+    // Two passes retain only one stripe, rather than a second compressed image.
+    for (std::size_t y = 0; y < image.height; y += 8) {
+        const auto bh = std::min<std::size_t>(8, image.height - y);
+        for (std::size_t x = 0; x < image.width; x += 8) {
+            const auto bw = std::min<std::size_t>(8, image.width - x);
+            const auto candidates = predict_block(image, x, y);
+            filters.push_back(options.tlg6_filter_search == Tlg6FilterSearch::reference
+                ? choose_filter_reference(candidates, bw * bh, colors)
+                : choose_filter_factored(candidates, bw * bh, colors));
+        }
+    }
+    auto output = encode6_with_filters(image, options, filters);
+    if (options.tlg6_filter_search == Tlg6FilterSearch::refined) {
+        auto work = options.max_tlg6_refinement_work;
+        const auto consider = [&] {
+            auto candidate = encode6_with_filters(image, options, filters);
+            if (candidate.size() < output.size()) output = std::move(candidate);
+        };
+        // Preserve the best full file at each stage: a local entropy gain may
+        // still increase the globally compressed filter table.
+        if (refine_uniform_filters(image, filters, work)) consider();
+        if (refine_local_filters(image, filters, work)) consider();
+    }
+    return output;
 }
 
 Image decode6(std::span<const std::uint8_t> bytes, const DecodeOptions& options) {

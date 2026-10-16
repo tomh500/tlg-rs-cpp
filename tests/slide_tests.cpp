@@ -300,6 +300,16 @@ void optimal_parsing() {
     CHECK(SlideEncoder({}, SlideParse::optimal).encode(std::vector<std::uint8_t>(273)).size() == 4);
     const std::vector<std::uint8_t> one_run(274, 'x');
     CHECK(SlideEncoder{}.encode(one_run).size() == 5);
+    // Nine-bit lengths crossing trace byte boundaries in every flag phase.
+    for (unsigned phase = 0; phase < 8; ++phase) {
+        auto raw = data_for(4, phase);
+        raw.insert(raw.end(), 300, 'x');
+        constexpr auto tree_bytes = std::size_t{1024 * 16} * sizeof(std::size_t);
+        const auto encoded = SlideEncoder(dictionary, SlideParse::optimal,
+            tree_bytes + 11 * raw.size()).encode(raw);
+        CHECK(encoded.size() == optimal_size_reference(raw, dictionary));
+        CHECK(ReferenceDecoder(dictionary).decode(encoded) == raw);
+    }
 
     std::vector<std::uint8_t> greedy_trap(80);
     std::uint32_t state = 1;
@@ -419,7 +429,7 @@ void malformed() {
     // The scratch limit is checked before precomputation can consume the input.
     const auto small_dictionary = data_for(4, 4096);
     constexpr auto tree_bytes = std::size_t{1024 * 16} * sizeof(std::size_t);
-    SlideEncoder limited_existing(small_dictionary, SlideParse::optimal, tree_bytes + 20 * 3);
+    SlideEncoder limited_existing(small_dictionary, SlideParse::optimal, tree_bytes + 11 * 3);
     rejects([&] { static_cast<void>(limited_existing.encode(std::vector<std::uint8_t>(4, 'x'))); }, tlg::ErrorCode::resource_limit);
     const auto three = std::span(small_dictionary).subspan(100, 3);
     CHECK(limited_existing.encode(three) == SlideEncoder(small_dictionary, SlideParse::optimal).encode(three));

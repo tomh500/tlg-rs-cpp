@@ -17,7 +17,7 @@ $original = [IO.File]::ReadAllText($manifestPath)
 $jpegFeatures = 'features = ["jpeg"]'
 $extendedFeatures = 'features = ["jpeg", "png", "bmp", "tiff", "qoi", "tga", "ff", "pnm", "dds"]'
 if (-not $original.Contains($jpegFeatures) -and -not $original.Contains($extendedFeatures)) {
-    throw 'Expected the pinned v1.0.0 JPEG test dependency in the temporary Rust tree'
+    throw 'Expected the pinned upstream JPEG test dependency in the temporary Rust tree'
 }
 try {
     [IO.File]::WriteAllText($manifestPath, $original.Replace($jpegFeatures, $extendedFeatures))
@@ -27,6 +27,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Rust image oracle build failed' }
     $oracle = Join-Path $rustRoot 'target/release/examples/interop_images.exe'
     if (-not (Test-Path -LiteralPath $oracle)) { $oracle = Join-Path $rustRoot 'target/release/examples/interop_images' }
+    & $oracle check_v110
+    if ($LASTEXITCODE -ne 0) { throw 'Upstream v1.1.0 read_to_image layout regression failed' }
     $helpText = & $cpp --help
     if ($LASTEXITCODE -ne 0) { throw 'C++ tool is unavailable' }
     $count = 0

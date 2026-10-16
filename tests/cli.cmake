@@ -75,6 +75,22 @@ function(compare_pixels original restored)
     endif()
 endfunction()
 
+foreach(profile reference optimized compact)
+    foreach(version 5 6)
+        run_tool(transcode --profile ${profile} --format ${version} --refine-work 4096
+            "${WORK}/6.tlg" "${WORK}/${profile}-${version}.tlg")
+        run_tool(decode --profile ${profile} "${WORK}/${profile}-${version}.tlg" "${WORK}/${profile}-${version}.raw")
+        compare_pixels("${WORK}/input.raw" "${WORK}/${profile}-${version}.raw")
+        run_tool(info "${WORK}/${profile}-${version}.tlg")
+        if(NOT tool_output MATCHES "a,b:c=d")
+            message(FATAL_ERROR "profile ${profile} lost metadata")
+        endif()
+    endforeach()
+endforeach()
+# A later profile must clear compact's whole-file comparison flag too.
+run_tool(transcode --profile compact --profile optimized --slide-memory 1
+    "${WORK}/6.tlg" "${WORK}/reset-profile.tlg")
+
 run_tool(--version)
 if(NOT tool_output MATCHES "tlg_tool [0-9]+\\.[0-9]+\\.[0-9]+")
     message(FATAL_ERROR "version did not identify the tool: ${tool_output}")

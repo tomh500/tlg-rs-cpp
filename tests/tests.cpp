@@ -173,6 +173,59 @@ void algorithm_choices() {
     const auto bad_decode = tlg::decode(*encoded, decode_options);
     REQUIRE(!bad_decode && bad_decode.error().code == tlg::ErrorCode::invalid_argument);
 }
+void compact_encoding() {
+    unsigned improvements = 0;
+    const tlg::Tags tags{{"a,:=", "value,:=\n"}, {"", ""}};
+    for (const auto layout : {tlg::PixelLayout::gray, tlg::PixelLayout::rgb, tlg::PixelLayout::rgba}) {
+        for (const auto width : {1U, 9U, 33U, 65U}) {
+            for (const auto height : {1U, 9U, 17U}) {
+                for (unsigned pattern = 0; pattern < 5; ++pattern) {
+                    const auto raw = pixels(width, height, layout, pattern);
+                    const tlg::ImageView image{width, height, layout, raw};
+                    for (const auto format : {tlg::Format::tlg5, tlg::Format::tlg6}) {
+                        tlg::EncodeOptions options{format};
+                        const auto greedy = tlg::encode(image, options, tags);
+                        options.slide_parse = tlg::SlideParse::optimal;
+                        const auto optimal = tlg::encode(image, options, tags);
+                        REQUIRE(greedy && optimal);
+                        options.tlg6_filter_search = tlg::Tlg6FilterSearch::refined;
+                        options.compare_slide_parses = true;
+                        const auto compact = tlg::encode(image, options, tags);
+                        REQUIRE(compact);
+                        REQUIRE(compact->size() <= greedy->size());
+                        REQUIRE(compact->size() <= optimal->size());
+                        improvements += compact->size() < optimal->size();
+                        for (const auto mode : {tlg::SlideDecode::bulk, tlg::SlideDecode::scalar}) {
+                            tlg::DecodeOptions decoding;
+                            decoding.slide_decode = mode;
+                            const auto decoded = tlg::decode(*compact, decoding);
+                            REQUIRE(decoded && decoded->image.pixels == raw);
+                            REQUIRE(decoded->tags == tags && decoded->format == format);
+                            REQUIRE(decoded->image.layout == layout);
+                        }
+                        if (format == tlg::Format::tlg6) {
+                            options.compare_slide_parses = false;
+                            options.max_tlg6_refinement_work = 0;
+                            const auto unrefined = tlg::encode(image, options, tags);
+                            REQUIRE(unrefined && *unrefined == *optimal);
+                            // Partial work must stop at an intact candidate, not
+                            // publish the residuals from a half-scored trial.
+                            for (const auto work : {1U, 63U, 273U, 4095U}) {
+                                options.max_tlg6_refinement_work = work;
+                                const auto bounded = tlg::encode(image, options, tags);
+                                REQUIRE(bounded && bounded->size() <= optimal->size());
+                                const auto decoded = tlg::decode(*bounded);
+                                REQUIRE(decoded && decoded->image.pixels == raw);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    REQUIRE(improvements > 0);
+}
+
 void metadata() {
     const tlg::Tags tags{{"author", "\xe8\xbd\xa9\xe9\x85\xb1"},
         {"a:=,\xe6\x96\x87", "value,:=\n\xe4\xb8\xad\xe6\x96\x87\xf0\x9f\x99\x82"},
@@ -518,9 +571,10 @@ void file_io() {
 }
 
 int main() {
-    const std::array<std::pair<std::string_view, void(*)()>, 9> tests{{
+    const std::array<std::pair<std::string_view, void(*)()>, 10> tests{{
         {"round trips across block boundaries", round_trips}, {"length-prefixed deterministic metadata", metadata},
         {"exact filter factoring and selectable Slide algorithms", algorithm_choices},
+        {"compact whole-file size bounds and refinement budgets", compact_encoding},
         {"invalid encoder arguments", invalid_arguments}, {"malformed streams, truncation, and resource limits", malformed_and_limits},
         {"handwritten TLG5 variable block heights", tlg5_wire_examples}, {"bounded deterministic mutation sweep", mutation_sweep},
         {"immutable Rust interoperability fixtures", rust_fixtures}, {"file I/O", file_io}}};

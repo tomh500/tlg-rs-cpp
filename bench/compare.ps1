@@ -7,7 +7,7 @@ param(
     [int]$Samples = 5,
     [string]$OutputDirectory = "$PSScriptRoot/../build/benchmark",
     [ValidateSet('greedy', 'optimal')][string]$SlideParse = 'greedy',
-    [ValidateSet('factored', 'reference')][string]$FilterSearch = 'factored',
+    [ValidateSet('factored', 'reference', 'refined', 'compact')][string]$FilterSearch = 'factored',
     [ValidateSet('bulk', 'scalar')][string]$SlideDecode = 'bulk',
     [string]$RawFile = '',
     [ValidateSet(1, 3, 4)][int]$Channels = 4,

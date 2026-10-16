@@ -40,6 +40,34 @@ fn decode(data: &[u8], format: u8) -> (Vec<u8>, tlg::ImageInfo) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     match args.get(1).map(String::as_str) {
+        Some("check_v110") => {
+            // Test v1.1.0's public API fixes, not just the direct codec APIs.
+            for c in [1, 3, 4] { for (format, ty) in [(5, TlgType::Tlg5), (6, TlgType::Tlg6)] {
+                let raw = pixels(19, 13, c, "random");
+                let writer = TlgWriter::from_raw(raw.clone(), HashMap::new(), 19, 13, layout(c), ty);
+                assert_eq!(writer.tlg_type(), ty);
+                let bytes = writer.write().unwrap();
+                for offset in [0usize, 17] {
+                    let mut prefixed = vec![0xaa; offset];
+                    prefixed.extend_from_slice(&bytes);
+                    let mut cursor = Cursor::new(prefixed);
+                    cursor.set_position(offset as u64);
+                    let (actual, info, tags) = tlg::TlgReader::new(cursor).read().unwrap();
+                    let copied_info = info;
+                    assert_eq!(info, copied_info);
+                    assert_eq!((info.width, info.height, info.pixel_layout), (19, 13, layout(c)));
+                    assert_eq!(actual, raw, "public reader TLG{format} channels={c} offset={offset}");
+                    assert!(tags.is_empty());
+                }
+                #[cfg(feature = "image")]
+                {
+                    let (image, _) = tlg::TlgReader::new(Cursor::new(bytes)).read_to_image().unwrap();
+                    assert_eq!(image.as_bytes(), raw);
+                    assert_eq!(image.color().channel_count() as usize, c);
+                }
+            }}
+            println!("PASS v1.1.0 public reader offsets, writer type, ImageInfo traits and optional image layouts");
+        }
         Some("generate") => {
             let dir = Path::new(&args[2]); fs::create_dir_all(dir).unwrap();
             let cases = [("gray_1x1_zero", 1, 1, 1, "zero"),

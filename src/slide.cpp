@@ -357,21 +357,24 @@ std::vector<std::uint8_t> SlideEncoder::encode(std::span<const std::uint8_t> inp
 }
 
 std::vector<std::uint8_t> SlideEncoder::encode_optimal(std::span<const std::uint8_t> input) {
-    struct Step {
-        std::uint16_t slot{};
-        std::uint16_t maximum{};
-        std::array<std::uint16_t, 8> chosen{};
-    };
+    // A token length needs nine bits, not sixteen. Keep the slot separately
+    // to avoid struct padding: 2N + 9N bytes instead of the old 20N.
+    // Before the backward pass, the first two trace bytes hold the match cap.
+    using Trace = std::array<std::uint8_t, 9>;
     std::vector<std::uint8_t> output;
-    std::vector<Step> steps;
+    std::vector<std::uint16_t> slots;
+    std::vector<Trace> trace;
     const auto flags = input.size() / 8 + (input.size() % 8 != 0);
-    require(input.size() <= output.max_size() - flags && input.size() <= steps.max_size(),
+    require(input.size() <= output.max_size() - flags && input.size() <= slots.max_size() &&
+            input.size() <= trace.max_size(),
             ErrorCode::resource_limit, "Slide optimal input is too large");
     if (input.empty()) return output;
     require(max_working_bytes_ >= ParseMinimum::working_bytes &&
-            input.size() <= (max_working_bytes_ - ParseMinimum::working_bytes) / sizeof(Step),
+            input.size() <= (max_working_bytes_ - ParseMinimum::working_bytes) /
+                (sizeof(std::uint16_t) + sizeof(Trace)),
             ErrorCode::resource_limit, "Slide optimal scratch exceeds working memory limit");
-    steps.resize(input.size());
+    slots.resize(input.size());
+    trace.resize(input.size());
     output.resize(input.size() + flags);
     ParseMinimum minimum;
 
@@ -380,8 +383,9 @@ std::vector<std::uint8_t> SlideEncoder::encode_optimal(std::span<const std::uint
     for (std::size_t i = 0; i < input.size(); ++i) {
         if (position_ >= (1u << 31)) rebase();
         const auto [slot, length] = find_match(input.subspan(i));
-        steps[i].slot = static_cast<std::uint16_t>(slot);
-        steps[i].maximum = static_cast<std::uint16_t>(length);
+        slots[i] = static_cast<std::uint16_t>(slot);
+        trace[i][0] = static_cast<std::uint8_t>(length);
+        trace[i][1] = static_cast<std::uint8_t>(length >> 8);
         push(input[i]);
     }
 
@@ -389,7 +393,8 @@ std::vector<std::uint8_t> SlideEncoder::encode_optimal(std::span<const std::uint
     minimum.put(input.size(), costs);
     for (auto i = input.size(); i-- != 0;) {
         const auto literal = minimum.query(i + 1, i + 1);
-        const auto cap = steps[i].maximum;
+        const auto cap = std::size_t{trace[i][0]} | (std::size_t{trace[i][1]} << 8);
+        trace[i].fill(0);
         const auto short_match = cap >= 3 ? minimum.query(i + 3, i + std::min<std::size_t>(17, cap))
                                            : ParseMinimum::Node{};
         const auto long_match = cap >= 18 ? minimum.query(i + 18, i + cap)
@@ -410,7 +415,8 @@ std::vector<std::uint8_t> SlideEncoder::encode_optimal(std::span<const std::uint
             // 贪心只顾眼前最长，明天可能就亏了；flag byte 也要算，不能逃单。
             if (cap >= 3) consider(short_match, 2);
             if (cap >= 18) consider(long_match, 3);
-            steps[i].chosen[phase] = static_cast<std::uint16_t>(length);
+            trace[i][phase] |= static_cast<std::uint8_t>(length << phase);
+            trace[i][phase + 1] |= static_cast<std::uint8_t>(length >> (8 - phase));
         }
         minimum.put(i, costs);
     }
@@ -421,10 +427,11 @@ std::vector<std::uint8_t> SlideEncoder::encode_optimal(std::span<const std::uint
             flag_position = written++;
             output[flag_position] = 0;
         }
-        const auto length = steps[i].chosen[phase];
+        const auto length = ((std::size_t{trace[i][phase]} |
+            (std::size_t{trace[i][phase + 1]} << 8)) >> phase) & 511;
         if (length == 1) output[written++] = input[i];
         else {
-            const auto slot = steps[i].slot;
+            const auto slot = slots[i];
             output[flag_position] |= static_cast<std::uint8_t>(1u << phase);
             output[written++] = static_cast<std::uint8_t>(slot);
             output[written++] = static_cast<std::uint8_t>((slot >> 8) |

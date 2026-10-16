@@ -19,7 +19,7 @@ enum class Format { tlg5, tlg6 };
 enum class SlideParse { greedy, optimal };
 enum class SlideMatch { adaptive, primary };
 enum class SlideDecode { bulk, scalar };
-enum class Tlg6FilterSearch { factored, reference };
+enum class Tlg6FilterSearch { factored, reference, refined };
 
 // Pixels are tightly packed, top to bottom, in Gray/RGB/RGBA order.
 // A view borrows its storage; encode never takes ownership or modifies it.
@@ -89,6 +89,13 @@ struct EncodeOptions {
     // output are separate. The guarantee is the smallest individual Slide chunk.
     std::size_t max_slide_working_bytes = std::size_t{256} << 20;
     SlideMatch slide_match = SlideMatch::adaptive;
+    // Refined search scores complete stripes, including byte padding, then
+    // keeps the smaller complete file against the factored baseline.
+    // Budget counts residual bytes examined by entropy scoring per Slide parse.
+    std::size_t max_tlg6_refinement_work = std::size_t{64} << 20;
+    // Compare complete greedy/optimal files, including TLG5 dictionary forks.
+    // Requires enough optimal scratch for every Slide chunk.
+    bool compare_slide_parses = false;
 };
 
 [[nodiscard]] Result<std::vector<std::uint8_t>> encode(

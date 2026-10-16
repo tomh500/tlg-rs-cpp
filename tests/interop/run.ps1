@@ -12,12 +12,14 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $outputRoot = (Resolve-Path -LiteralPath $OutputDirectory).Path
 New-Item -ItemType Directory -Force -Path "$rustRoot/examples" | Out-Null
 Copy-Item -LiteralPath "$PSScriptRoot/rust_oracle.rs" -Destination "$rustRoot/examples/interop.rs"
-& $Cargo build --manifest-path "$rustRoot/Cargo.toml" --release --no-default-features --example interop
+& $Cargo build --manifest-path "$rustRoot/Cargo.toml" --release --no-default-features --example interop --locked
 if ($LASTEXITCODE -ne 0) { throw 'Rust oracle build failed' }
 $oraclePath = Join-Path $rustRoot 'target/release/examples/interop.exe'
 if (-not (Test-Path -LiteralPath $oraclePath)) {
     $oraclePath = Join-Path $rustRoot 'target/release/examples/interop'
 }
+& $oraclePath check_v110
+if ($LASTEXITCODE -ne 0) { throw 'Upstream v1.1.0 public API regression failed' }
 $cases = @(
     @('gray_1x1_zero', 1, 1, 'gray', 1),
     @('gray_19x13_random', 19, 13, 'gray', 1),

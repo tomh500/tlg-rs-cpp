@@ -39,7 +39,7 @@ foreach ($shape in @(@(1,1), @(1,273), @(273,1), @(7,9), @(8,8), @(9,17), @(33,3
                 }
                 foreach ($parse in @('greedy','optimal')) {
                   foreach ($match in @('adaptive','primary')) {
-                    foreach ($search in $(if ($format -eq 6) { @('factored','reference') } else { @('factored') })) {
+                    foreach ($search in $(if ($format -eq 6) { @('factored','reference','refined') } else { @('factored') })) {
                         $encoded = Join-Path $output "$name.$parse.$match.$search.tlg$format"
                         & $cpp encode --format $format --width $width --height $height --layout $layout --slide-parse $parse --slide-match $match --filter-search $search $rawPath $encoded
                         if ($LASTEXITCODE -ne 0) { throw "C++ $parse/$search encoding $name TLG$format failed" }
@@ -49,6 +49,18 @@ foreach ($shape in @(@(1,1), @(1,273), @(273,1), @(7,9), @(8,8), @(9,17), @(33,3
                     }
                   }
                 }
+                $compact = Join-Path $output "$name.compact.tlg$format"
+                & $cpp encode --profile compact --format $format --width $width --height $height --layout $layout $rawPath $compact
+                if ($LASTEXITCODE -ne 0) { throw "C++ compact encoding $name TLG$format failed" }
+                $null = & $rust verify $format $width $height $channel $compact $rawPath
+                if ($LASTEXITCODE -ne 0) { throw "Latest Rust decoding compact $name TLG$format failed" }
+                foreach ($parse in @('greedy','optimal')) {
+                    $baseline = Join-Path $output "$name.$parse.adaptive.factored.tlg$format"
+                    if ((Get-Item -LiteralPath $compact).Length -gt (Get-Item -LiteralPath $baseline).Length) {
+                        throw "Compact output exceeds $parse baseline for $name TLG$format"
+                    }
+                }
+                ++$checks
                 ++$cases
             }
         }

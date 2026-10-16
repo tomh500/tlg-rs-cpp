@@ -24,7 +24,7 @@
 #endif
 
 #ifndef TLG_TOOL_VERSION
-#define TLG_TOOL_VERSION "1.1.0"
+#define TLG_TOOL_VERSION "1.2.0"
 #endif
 
 namespace {
@@ -40,13 +40,14 @@ constexpr std::string_view help = R"(tlg_tool - lossless TLG5/TLG6 codec
   tlg_tool detect INPUT
 
 Algorithm profile (encode, transcode, decode, info):
-  --profile reference|optimized      Choose a complete C++ algorithm profile
+  --profile reference|optimized|compact  C++ algorithm profile (default optimized)
 Encoding options:
   -v, --version, --format 5|6          TLG version (default 6)
   --slide-parse greedy|optimal        Slide parser (default greedy)
   --slide-match adaptive|primary      Slide match index (default adaptive)
   --slide-memory BYTES                Optimal parser memory ceiling
-  --filter-search factored|reference  TLG6 filter search (default factored)
+  --filter-search factored|reference|refined  TLG6 filter search (default factored)
+  --refine-work BYTES                 Residual scoring budget (default 67108864)
 Decoding options:
   --slide-decode bulk|scalar          Slide decoder (default bulk)
 
@@ -217,12 +218,15 @@ Arguments parse(const std::vector<std::string>& args) {
         if (args[1] != "detect" && arg == "--profile") {
             // These are our C++ reference paths. Calling them an exact Rust
             // replica would be a bit too generous to the word "exact".
-            if (value != "reference" && value != "optimized")
-                throw std::invalid_argument("profile must be reference or optimized");
+            if (value != "reference" && value != "optimized" && value != "compact")
+                throw std::invalid_argument("profile must be reference, optimized, or compact");
             const bool reference = value == "reference";
-            parsed.encode.slide_parse = tlg::SlideParse::greedy;
+            const bool compact = value == "compact";
+            parsed.encode.compare_slide_parses = compact;
+            parsed.encode.slide_parse = compact ? tlg::SlideParse::optimal : tlg::SlideParse::greedy;
             parsed.encode.slide_match = reference ? tlg::SlideMatch::primary : tlg::SlideMatch::adaptive;
             parsed.encode.tlg6_filter_search = reference ? tlg::Tlg6FilterSearch::reference : tlg::Tlg6FilterSearch::factored;
+            if (compact) parsed.encode.tlg6_filter_search = tlg::Tlg6FilterSearch::refined;
             parsed.decode.slide_decode = reference ? tlg::SlideDecode::scalar : tlg::SlideDecode::bulk;
         } else if (encoding && (arg == "--format" || arg == "--version" || arg == "-v")) {
             if (value == "5") parsed.encode.format = tlg::Format::tlg5;
@@ -239,7 +243,10 @@ Arguments parse(const std::vector<std::string>& args) {
         } else if (encoding && arg == "--filter-search") {
             if (value == "factored") parsed.encode.tlg6_filter_search = tlg::Tlg6FilterSearch::factored;
             else if (value == "reference") parsed.encode.tlg6_filter_search = tlg::Tlg6FilterSearch::reference;
-            else throw std::invalid_argument("filter search must be factored or reference");
+            else if (value == "refined") parsed.encode.tlg6_filter_search = tlg::Tlg6FilterSearch::refined;
+            else throw std::invalid_argument("filter search must be factored, reference, or refined");
+        } else if (encoding && arg == "--refine-work") {
+            parsed.encode.max_tlg6_refinement_work = positive_number<std::size_t>(value, "refinement work budget");
         } else if (encoding && arg == "--slide-memory") {
             parsed.encode.max_slide_working_bytes = positive_number<std::size_t>(value, "Slide memory ceiling");
         } else if (args[1] != "detect" && arg == "--slide-decode") {
