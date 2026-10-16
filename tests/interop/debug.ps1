@@ -24,3 +24,6 @@ if ($exitCode -eq 0) {
     $details | Write-Host
     throw "Unexpected upstream Debug failure (exit $exitCode)"
 }
+# The known panic was handled above. Do not leak its native exit code into
+# callers such as GitHub Actions' PowerShell wrapper.
+exit 0
